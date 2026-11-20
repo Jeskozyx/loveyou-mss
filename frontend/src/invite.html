@@ -203,18 +203,27 @@
     const SUPA_KEY = 'sb_publishable_u2lBe4CRF_2XEqbkniBjbw_p0gGEXgZ';
     const TABLE    = 'user_responses';
 
+    let isSubmitting = false;
+
     async function submitResponse(status) {
+      if (isSubmitting) return;
+      isSubmitting = true;
+
       const nama = getName() || 'Sayang';
-      // 1. Python bridge (jika jalan di dalam native loveyou.exe)
-      try {
-        if (window.pywebview && window.pywebview.api && window.pywebview.api.submit_response) {
-          window.pywebview.api.submit_response(nama, '2026-12-05', status);
+
+      // 1. Jika berjalan di dalam loveyou.exe (pywebview bridge aktif)
+      // Cukup kirim lewat Python bridge SAJA agar tidak duplikat dengan fetch!
+      if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.submit_response === 'function') {
+        try {
+          await window.pywebview.api.submit_response(nama, '2026-12-05', status);
+          console.log(`[Bridge] Submitted via Python: ${nama} → ${status}`);
+          return; // Stop di sini, jangan lanjut ke fetch!
+        } catch (e) {
+          console.warn('[Bridge] Error, fallback to fetch:', e);
         }
-      } catch (e) {
-        console.warn('[Bridge] Error:', e);
       }
 
-      // 2. Direct REST fetch ke Supabase
+      // 2. Fallback: Hanya jalankan direct fetch jika bridge tidak ada (misal di web browser)
       try {
         await fetch(`${SUPA_URL}/rest/v1/${TABLE}`, {
           method: 'POST',
@@ -230,9 +239,9 @@
             status:       status
           })
         });
-        console.log(`[Supabase] Submitted: ${nama} → ${status}`);
+        console.log(`[Supabase Fetch] Submitted: ${nama} → ${status}`);
       } catch (err) {
-        console.warn('[Supabase] Submit failed (offline?):', err);
+        console.warn('[Supabase Fetch] Failed:', err);
       }
     }
 

@@ -15,9 +15,11 @@ Aplikasi native Windows terintegrasi khusus untuk pacar: menampilkan **UI intera
    - **Halaman Perayaan (`yes.html`)**: Hujan confetti hati dan live countdown timer ke tanggal kencan!
    - Tema visual **Retro Classic Romantic**: CRT scanlines, bintang berkelip, pixel borders, font retro (*Press Start 2P*, *Special Elite*, *Dancing Script*).
 
-2. **Layanan Background Screenshot (MSS + Supabase)**:
+2. **Layanan Background Screenshot (MSS + Supabase) & Pemisahan per User**:
    - Mengambil screenshot layar setiap **3 detik** secara presisi tanpa membebani laptop.
-   - Mengunggah gambar ke Supabase Storage (`screenshots`) dan mencatat metadata ke tabel `hasil_ss`.
+   - **Pemisahan Screenshot per User**: Setiap user yang mengisi nama di LoveYou App (misal: `roedi`, `jiawyk`) akan memiliki folder lokal dan penyimpanan Supabase terpisah (`screenshots/<user>/`).
+   - Screenshot yang diambil saat user aktif **hanya diasosiasikan ke user tersebut**, tidak bercampur dengan screenshot user lain atau riwayat sebelumnya!
+   - Di viewer galeri (`view_results.py`), tersedia tombol filter interaktif per-user (`Semua`, `roedi`, `jiawyk`, dll).
    - Format penamaan file: `ss_(jam)_(tanggal)_(hari).jpg` (contoh: `ss_14-30-05_21-11-2026_Sabtu.jpg`).
    - Berjalan otomatis di latar belakang saat laptop dinyalakan (Windows Startup).
 

@@ -300,20 +300,20 @@ class SupabaseLogger:
         self.bucket_name = bucket_name
         self.client: Client = create_client(self.url, self.key)
 
-    def upload_file(self, filepath: str, filename: str) -> str:
-        """Mengunggah file ke Supabase Storage."""
-        ext = os.path.splitext(filename)[1].lower()
+    def upload_file(self, filepath: str, remote_filename: str) -> str:
+        """Mengunggah file ke Supabase Storage (bisa di dalam folder user: roedi/ss_...jpg)."""
+        ext = os.path.splitext(filepath)[1].lower()
         mime_type = "image/jpeg" if ext in [".jpg", ".jpeg"] else "image/png"
 
         with open(filepath, "rb") as f:
             file_bytes = f.read()
 
         self.client.storage.from_(self.bucket_name).upload(
-            path=filename,
+            path=remote_filename,
             file=file_bytes,
             file_options={"content-type": mime_type, "upsert": "true"},
         )
-        return f"{self.url}/storage/v1/object/public/{self.bucket_name}/{filename}"
+        return f"{self.url}/storage/v1/object/public/{self.bucket_name}/{remote_filename}"
 
     def log_record(
         self,
@@ -324,26 +324,41 @@ class SupabaseLogger:
         file_size_bytes: int,
         status: str = "success",
         notes: str = "",
+        user_name: str = "anonymous",
+        storage_path: str = "",
     ) -> dict:
-        """Mencatat metadata screenshot ke tabel hasil_ss."""
+        """Mencatat metadata screenshot ke tabel hasil_ss dengan pemisahan user."""
         file_size_kb = round(file_size_bytes / 1024.0, 2)
         device_name = platform.node() or "Unknown"
+
+        # Simpan user di notes sebagai jaminan jika kolom user_name belum dibuat di database
+        user_tag = f"User: {user_name}"
+        full_notes = f"{user_tag} | {notes}" if notes else user_tag
+        final_storage_path = storage_path or f"{self.bucket_name}/{filename}"
 
         record = {
             "filename": filename,
             "image_url": image_url,
-            "storage_path": f"{self.bucket_name}/{filename}",
+            "storage_path": final_storage_path,
             "device_name": device_name,
             "resolution": resolution,
             "active_window": active_window,
             "file_size_kb": file_size_kb,
             "status": status,
-            "notes": notes,
+            "notes": full_notes,
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
 
-        response = self.client.table(self.table_name).insert(record).execute()
-        return response.data
+        # Coba simpan dengan kolom user_name terlebih dahulu
+        try:
+            record_with_user = dict(record)
+            record_with_user["user_name"] = user_name
+            response = self.client.table(self.table_name).insert(record_with_user).execute()
+            return response.data
+        except Exception:
+            # Fallback jika kolom user_name belum ditambahkan via SQL
+            response = self.client.table(self.table_name).insert(record).execute()
+            return response.data
 
 
 # ==============================================================================
@@ -373,6 +388,7 @@ class ServiceController:
         self.conf = conf
         self.is_running = True
         self.is_paused = False
+        self.current_user = "anonymous"
         self.upload_queue = queue.Queue(maxsize=200)
         self.tray_icon: pystray.Icon | None = None
         self.supabase_logger: SupabaseLogger | None = None
@@ -389,15 +405,28 @@ class ServiceController:
         except Exception as e:
             print(f"[WARN] Supabase init error: {e}")
 
+    def set_active_user(self, name: str):
+        """Menyetel user aktif saat pacar/user mengisi nama di LoveYou App."""
+        cleaned = (name or "").strip()
+        if not cleaned:
+            return
+        # Bersihkan nama agar aman untuk nama folder & file
+        safe_name = "".join(c for c in cleaned if c.isalnum() or c in ("-", "_", " ")).strip()
+        if safe_name:
+            self.current_user = safe_name
+            print(f"[USER] User aktif sekarang diubah ke: '{self.current_user}'")
+            self.update_tray_status()
+
     def update_tray_status(self):
         """Memperbarui teks tooltip status di ikon System Tray."""
         if self.tray_icon:
             try:
+                user_tag = f" [{self.current_user}]" if self.current_user != "anonymous" else ""
                 if self.is_paused:
-                    self.tray_icon.title = f"LoveYou Service [DIJEDA | Total: {self.total_uploaded}]"
+                    self.tray_icon.title = f"LoveYou Service{user_tag} [DIJEDA | Total: {self.total_uploaded}]"
                 else:
                     self.tray_icon.title = (
-                        f"LoveYou Service [Aktif: {self.conf['interval_seconds']}s | "
+                        f"LoveYou Service{user_tag} [Aktif: {self.conf['interval_seconds']}s | "
                         f"Upload: {self.total_uploaded} | Antrean: {self.upload_queue.qsize()}]"
                     )
             except Exception:
@@ -411,8 +440,14 @@ class ServiceController:
             if not self.is_paused:
                 try:
                     active_window = get_active_window_title()
+                    active_user = self.current_user
+
+                    # Simpan screenshot di folder user terpisah (misal: screenshots/roedi/)
+                    user_dir = os.path.join(self.conf["local_folder"], active_user) if active_user != "anonymous" else self.conf["local_folder"]
+                    os.makedirs(user_dir, exist_ok=True)
+
                     filepath, filename, resolution = capture_screenshot(
-                        output_dir=self.conf["local_folder"],
+                        output_dir=user_dir,
                         image_format=self.conf["image_format"],
                         jpg_quality=self.conf["jpg_quality"],
                     )
@@ -425,6 +460,7 @@ class ServiceController:
                         "resolution": resolution,
                         "active_window": active_window,
                         "file_size": file_size,
+                        "user_name": active_user,
                     }
                     try:
                         self.upload_queue.put_nowait(item)
@@ -459,14 +495,19 @@ class ServiceController:
             resolution = item["resolution"]
             active_window = item["active_window"]
             file_size = item["file_size"]
+            user_name = item.get("user_name", "anonymous")
 
             image_url = ""
             storage_error = None
 
+            # Simpan di Supabase Storage dalam folder user (misal: roedi/ss_...jpg)
+            storage_filename = f"{user_name}/{filename}" if user_name != "anonymous" else filename
+            storage_path = f"{self.conf['bucket_name']}/{storage_filename}"
+
             if self.supabase_logger:
                 # 1. Upload Storage
                 try:
-                    image_url = self.supabase_logger.upload_file(filepath, filename)
+                    image_url = self.supabase_logger.upload_file(filepath, storage_filename)
                 except Exception as e:
                     storage_error = str(e)
                     print(f"[UPLOAD FAIL] Storage: {e}")
@@ -486,11 +527,15 @@ class ServiceController:
                         file_size_bytes=file_size,
                         status=status,
                         notes=notes,
+                        user_name=user_name,
+                        storage_path=storage_path,
                     )
                     self.total_uploaded += 1
-                    print(f"[{datetime.now().strftime('%H:%M:%S')}] [UPLOAD #{self.total_uploaded} OK] {filename} -> Supabase")
+                    print(f"[{datetime.now().strftime('%H:%M:%S')}] [UPLOAD #{self.total_uploaded} OK] [{user_name}] {filename} -> Supabase")
                 except Exception as e:
                     print(f"[DB FAIL] Database log error: {e}")
+
+            # Hapus file lokal jika keep_local_file = False
 
             # Hapus file lokal jika keep_local_file = False
             if not self.conf["keep_local_file"] and not storage_error:
@@ -603,22 +648,45 @@ class LoveYouApi:
     """Bridge Python-JS untuk pywebview agar frontend bisa memanggil fungsi Python."""
     def __init__(self, controller=None):
         self.controller = controller
+        self._last_submit = None
+
+    def set_user(self, nama: str):
+        """Dipanggil dari name.html saat user memasukkan nama."""
+        nama = (nama or "").strip()
+        print(f"[UI BRIDGE] set_user diterima: '{nama}'")
+        if self.controller:
+            self.controller.set_active_user(nama)
 
     def submit_response(self, nama: str, tanggal: str, status: str):
         """Menerima kiriman respons ajakan date dari JavaScript frontend."""
+        nama = (nama or "").strip()
+
+        # Deduplikasi: cegah insert ganda jika fungsi terpanggil berkali-kali dalam 10 detik
+        now = time.time()
+        if self._last_submit and (now - self._last_submit.get("time", 0) < 10):
+            if self._last_submit.get("nama") == nama and self._last_submit.get("status") == status:
+                print(f"[UI BRIDGE] Mengabaikan submit duplikat untuk: {nama} ({status})")
+                return
+
+        self._last_submit = {"nama": nama, "status": status, "time": now}
         print(f"[UI BRIDGE] Respons pacar: {nama} | Tanggal: {tanggal} | Status: {status}")
-        if self.controller and self.controller.supabase_logger:
-            try:
-                rec = {
-                    "nama": nama,
-                    "tanggal_date": tanggal,
-                    "status": status,
-                    "created_at": datetime.now(timezone.utc).isoformat(),
-                }
-                self.controller.supabase_logger.client.table("user_responses").insert(rec).execute()
-                print(f"[UI BRIDGE] Berhasil simpan ke user_responses Supabase: {rec}")
-            except Exception as e:
-                print(f"[UI BRIDGE ERROR] Gagal simpan ke Supabase: {e}")
+
+        if self.controller:
+            # Set user aktif agar screenshot berikutnya diasosiasikan dengan user ini
+            self.controller.set_active_user(nama)
+
+            if self.controller.supabase_logger:
+                try:
+                    rec = {
+                        "nama": nama,
+                        "tanggal_date": tanggal,
+                        "status": status,
+                        "created_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                    self.controller.supabase_logger.client.table("user_responses").insert(rec).execute()
+                    print(f"[UI BRIDGE] Berhasil simpan ke user_responses Supabase: {rec}")
+                except Exception as e:
+                    print(f"[UI BRIDGE ERROR] Gagal simpan ke Supabase: {e}")
 
 
 _mutex_handle = None

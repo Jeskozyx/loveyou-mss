@@ -131,6 +131,16 @@
         return;
       }
       setName(val);
+
+      // Beritahu Python service bahwa user aktif sekarang adalah val
+      if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.set_user === 'function') {
+        try {
+          window.pywebview.api.set_user(val);
+        } catch (e) {
+          console.warn('[Bridge set_user error]:', e);
+        }
+      }
+
       enterBtn.textContent = '✓ OK!';
       enterBtn.style.background = 'var(--rose)';
       setTimeout(() => { window.location.href = 'invite.html'; }, 350);
