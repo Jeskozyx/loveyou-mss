@@ -1,0 +1,292 @@
+/* ============================================================
+   LOVEYOU APP — Retro Classic Romantic Style
+   Global CSS Variables & Base
+   ============================================================ */
+
+@import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&family=Special+Elite&family=Dancing+Script:wght@600;700&display=swap');
+
+:root {
+  --bg-dark:        #0d0007;
+  --bg-card:        #1a0010;
+  --rose:           #e8225a;
+  --rose-light:     #ff6b9d;
+  --rose-pale:      #ffd6e7;
+  --gold:           #f5c842;
+  --gold-dim:       #a8862a;
+  --cream:          #fdf3e3;
+  --text-main:      #fce4ec;
+  --text-dim:       #c97ea8;
+  --pixel:          'Press Start 2P', monospace;
+  --cursive:        'Dancing Script', cursive;
+  --typewriter:     'Special Elite', serif;
+  --border-pixel:   3px solid var(--rose);
+  --glow-rose:      0 0 12px #e8225a88, 0 0 32px #e8225a44;
+  --glow-gold:      0 0 10px #f5c84288, 0 0 28px #f5c84233;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  width: 100%; min-height: 100vh;
+  background: var(--bg-dark);
+  color: var(--text-main);
+  font-family: var(--typewriter);
+  overflow-x: hidden;
+}
+
+/* ======================= SCANLINES ========================= */
+body::before {
+  content: '';
+  position: fixed; inset: 0; z-index: 9999;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0,0,0,0.12) 2px,
+    rgba(0,0,0,0.12) 4px
+  );
+}
+
+/* ===================== STARFIELD BG ======================== */
+.stars {
+  position: fixed; inset: 0; z-index: 0;
+  background:
+    radial-gradient(ellipse at 20% 30%, #300020 0%, transparent 60%),
+    radial-gradient(ellipse at 80% 70%, #1a000f 0%, transparent 55%),
+    var(--bg-dark);
+}
+.stars::before, .stars::after {
+  content: '';
+  position: absolute; inset: 0;
+  background-image:
+    radial-gradient(1px 1px at 15% 20%, #fff9 0%, transparent 100%),
+    radial-gradient(1px 1px at 60% 10%, #ffd 0%, transparent 100%),
+    radial-gradient(1.5px 1.5px at 80% 40%, #f8c 0%, transparent 100%),
+    radial-gradient(1px 1px at 35% 65%, #fff9 0%, transparent 100%),
+    radial-gradient(1px 1px at 90% 80%, #ffd 0%, transparent 100%),
+    radial-gradient(2px 2px at 10% 90%, #f8c 0%, transparent 100%),
+    radial-gradient(1px 1px at 55% 50%, #fff9 0%, transparent 100%),
+    radial-gradient(1px 1px at 25% 85%, #ffd 0%, transparent 100%),
+    radial-gradient(1.5px 1.5px at 70% 25%, #f8c 0%, transparent 100%),
+    radial-gradient(1px 1px at 45% 95%, #fff9 0%, transparent 100%);
+  animation: twinkle 4s ease-in-out infinite alternate;
+}
+.stars::after {
+  background-image:
+    radial-gradient(1px 1px at 5% 55%, #fff9 0%, transparent 100%),
+    radial-gradient(1px 1px at 42% 38%, #ffd 0%, transparent 100%),
+    radial-gradient(1.5px 1.5px at 75% 60%, #f8c 0%, transparent 100%),
+    radial-gradient(1px 1px at 88% 15%, #fff9 0%, transparent 100%),
+    radial-gradient(1px 1px at 30% 45%, #ffd 0%, transparent 100%),
+    radial-gradient(2px 2px at 65% 75%, #f8c 0%, transparent 100%),
+    radial-gradient(1px 1px at 18% 70%, #fff9 0%, transparent 100%),
+    radial-gradient(1px 1px at 95% 35%, #ffd 0%, transparent 100%),
+    radial-gradient(1.5px 1.5px at 50% 15%, #f8c 0%, transparent 100%),
+    radial-gradient(1px 1px at 12% 5%, #fff9 0%, transparent 100%);
+  animation-delay: 2s;
+}
+@keyframes twinkle {
+  0%   { opacity: 0.4; }
+  100% { opacity: 1; }
+}
+
+/* =================== FLOATING HEARTS ======================= */
+.hearts-container {
+  position: fixed; inset: 0; z-index: 1; pointer-events: none; overflow: hidden;
+}
+.heart-float {
+  position: absolute; bottom: -60px;
+  font-size: 1.4rem;
+  animation: floatUp linear infinite;
+  opacity: 0;
+  user-select: none;
+}
+@keyframes floatUp {
+  0%   { transform: translateY(0) rotate(-15deg) scale(0.8); opacity: 0; }
+  10%  { opacity: 0.7; }
+  85%  { opacity: 0.5; }
+  100% { transform: translateY(-110vh) rotate(20deg) scale(1.1); opacity: 0; }
+}
+
+/* ====================== PAGE WRAPPER ======================= */
+.page {
+  position: relative; z-index: 2;
+  min-height: 100vh;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  padding: 2rem 1rem;
+}
+
+/* ====================== PIXEL BORDER ======================= */
+.pixel-box {
+  border: 3px solid var(--rose);
+  box-shadow: var(--glow-rose), inset 0 0 20px #e8225a11;
+  background: linear-gradient(135deg, #1a0010ee, #0d0007ee);
+  border-radius: 2px;
+  position: relative;
+}
+.pixel-box::before, .pixel-box::after {
+  content: '';
+  position: absolute;
+  width: 10px; height: 10px;
+  background: var(--gold);
+  box-shadow: var(--glow-gold);
+}
+.pixel-box::before { top: -5px; left: -5px; }
+.pixel-box::after  { bottom: -5px; right: -5px; }
+
+/* ========================= BUTTONS ========================= */
+.btn {
+  font-family: var(--pixel);
+  font-size: 0.65rem;
+  letter-spacing: 1px;
+  cursor: pointer;
+  border: 3px solid currentColor;
+  padding: 0.8rem 1.6rem;
+  border-radius: 2px;
+  transition: all 0.15s;
+  position: relative;
+  text-transform: uppercase;
+}
+.btn:active { transform: scale(0.95) translateY(2px); }
+
+.btn-rose {
+  color: var(--rose-light);
+  background: transparent;
+  border-color: var(--rose-light);
+  box-shadow: var(--glow-rose);
+}
+.btn-rose:hover {
+  background: var(--rose);
+  color: #fff;
+  box-shadow: 0 0 24px #e8225a, 0 0 60px #e8225a66;
+  transform: translateY(-2px);
+}
+
+.btn-gold {
+  color: var(--gold);
+  background: transparent;
+  border-color: var(--gold);
+  box-shadow: var(--glow-gold);
+}
+.btn-gold:hover {
+  background: var(--gold-dim);
+  color: #fff;
+  box-shadow: 0 0 24px #f5c842, 0 0 60px #f5c84266;
+  transform: translateY(-2px);
+}
+
+/* ========================= INPUT ========================== */
+.retro-input {
+  font-family: var(--typewriter);
+  font-size: 1.1rem;
+  background: #0d0007;
+  color: var(--rose-pale);
+  border: 2px solid var(--rose);
+  box-shadow: var(--glow-rose), inset 0 0 10px #e8225a22;
+  padding: 0.7rem 1rem;
+  border-radius: 2px;
+  outline: none;
+  width: 100%;
+  transition: box-shadow 0.2s;
+  caret-color: var(--rose-light);
+}
+.retro-input:focus {
+  box-shadow: 0 0 20px #e8225a99, 0 0 50px #e8225a44, inset 0 0 10px #e8225a33;
+  border-color: var(--rose-light);
+}
+.retro-input::placeholder { color: var(--text-dim); opacity: 0.6; }
+
+/* ======================== LABELS ========================== */
+.pixel-title {
+  font-family: var(--pixel);
+  color: var(--rose-light);
+  text-shadow: var(--glow-rose);
+  line-height: 1.8;
+}
+.cursive-title {
+  font-family: var(--cursive);
+  color: var(--gold);
+  text-shadow: var(--glow-gold);
+}
+.label-pixel {
+  font-family: var(--pixel);
+  font-size: 0.55rem;
+  color: var(--text-dim);
+  letter-spacing: 2px;
+  text-transform: uppercase;
+}
+
+/* ==================== TYPEWRITER ========================== */
+.typewriter { overflow: hidden; white-space: nowrap; }
+.typewriter-cursor::after {
+  content: '█';
+  color: var(--rose-light);
+  animation: blink 0.8s step-end infinite;
+}
+@keyframes blink { 50% { opacity: 0; } }
+
+/* ===================== HEART PULSE ======================== */
+.heart-beat {
+  display: inline-block;
+  animation: heartbeat 1.3s ease-in-out infinite;
+  transform-origin: center;
+}
+@keyframes heartbeat {
+  0%   { transform: scale(1); }
+  14%  { transform: scale(1.25); }
+  28%  { transform: scale(1); }
+  42%  { transform: scale(1.18); }
+  70%  { transform: scale(1); }
+}
+
+/* =================== FADE IN / SLIDE IN =================== */
+.fade-in {
+  animation: fadeIn 0.8s ease both;
+}
+.slide-up {
+  animation: slideUp 0.7s cubic-bezier(0.22,1,0.36,1) both;
+}
+@keyframes fadeIn  { from { opacity: 0; } to { opacity: 1; } }
+@keyframes slideUp { from { opacity: 0; transform: translateY(40px); } to { opacity: 1; transform: translateY(0); } }
+
+/* =================== PIXEL DIVIDER ======================= */
+.pixel-divider {
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--rose), var(--gold), var(--rose), transparent);
+  box-shadow: 0 0 8px #e8225a66;
+  margin: 1.5rem 0;
+  border: none;
+}
+
+/* ====================== SCROLLBAR ======================== */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: var(--bg-dark); }
+::-webkit-scrollbar-thumb { background: var(--rose); border-radius: 3px; }
+
+/* =================== GIF/EMOJI CONTAINER ================= */
+.emoji-row {
+  display: flex; gap: 0.5rem;
+  align-items: center; justify-content: center;
+  flex-wrap: wrap;
+}
+.emoji-bounce {
+  font-size: 2rem;
+  animation: emojiBounce 1.5s ease-in-out infinite;
+}
+.emoji-bounce:nth-child(2) { animation-delay: 0.2s; }
+.emoji-bounce:nth-child(3) { animation-delay: 0.4s; }
+.emoji-bounce:nth-child(4) { animation-delay: 0.6s; }
+.emoji-bounce:nth-child(5) { animation-delay: 0.8s; }
+
+@keyframes emojiBounce {
+  0%, 100% { transform: translateY(0); }
+  50%       { transform: translateY(-10px); }
+}
+
+/* =================== RESPONSIVE ========================== */
+@media (max-width: 480px) {
+  .pixel-title { font-size: 0.75rem !important; }
+  .cursive-title { font-size: 2.2rem !important; }
+}

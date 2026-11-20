@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>❤️ Ada Undangan Spesial!</title>
+  <link rel="stylesheet" href="assets/css/style.css" />
+  <style>
+    .invite-card {
+      width: min(500px, 94vw);
+      padding: 2.4rem 2rem 2rem;
+      text-align: center;
+      animation: slideUp 0.7s cubic-bezier(0.22,1,0.36,1) both;
+    }
+
+    .greeting {
+      font-family: var(--cursive);
+      font-size: 2.4rem;
+      color: var(--gold);
+      text-shadow: var(--glow-gold);
+      margin-bottom: 0.3rem;
+    }
+
+    .invite-msg {
+      font-family: var(--typewriter);
+      font-size: 1.08rem;
+      color: var(--rose-pale);
+      line-height: 1.8;
+      margin: 1rem 0 1.4rem;
+    }
+
+    .date-box {
+      display: inline-block;
+      border: 2px solid var(--gold);
+      box-shadow: var(--glow-gold);
+      padding: 0.6rem 1.4rem;
+      border-radius: 2px;
+      margin-bottom: 1.4rem;
+    }
+    .date-pixel {
+      font-family: var(--pixel);
+      font-size: 0.6rem;
+      color: var(--gold);
+      text-shadow: var(--glow-gold);
+      letter-spacing: 2px;
+      line-height: 2.2;
+    }
+
+    .emoji-row-big {
+      display: flex;
+      gap: 0.6rem;
+      justify-content: center;
+      flex-wrap: wrap;
+      margin: 0.8rem 0 1.4rem;
+    }
+    .emoji-big {
+      font-size: 2.2rem;
+      animation: emojiBounce 1.4s ease-in-out infinite;
+      display: inline-block;
+    }
+    .emoji-big:nth-child(1) { animation-delay: 0.0s; }
+    .emoji-big:nth-child(2) { animation-delay: 0.2s; }
+    .emoji-big:nth-child(3) { animation-delay: 0.4s; }
+    .emoji-big:nth-child(4) { animation-delay: 0.6s; }
+    .emoji-big:nth-child(5) { animation-delay: 0.8s; }
+    .emoji-big:nth-child(6) { animation-delay: 1.0s; }
+
+    /* ---- YES / NO buttons ---- */
+    .btn-row {
+      display: flex;
+      gap: 1.4rem;
+      justify-content: center;
+      align-items: center;
+      margin-top: 0.8rem;
+      flex-wrap: wrap;
+    }
+
+    #yesBtn {
+      font-size: 0.75rem;
+      padding: 1.1rem 2.6rem;
+      letter-spacing: 2px;
+    }
+
+    #noBtn {
+      font-size: 0.55rem;
+      padding: 0.7rem 1.4rem;
+      letter-spacing: 1px;
+      transition: left 0.18s ease, top 0.18s ease, font-size 0.2s, padding 0.2s, opacity 0.3s;
+    }
+
+    .cheeky-msg {
+      display: none;
+      font-family: var(--cursive);
+      font-size: 1.5rem;
+      color: var(--rose-light);
+      text-shadow: var(--glow-rose);
+      animation: fadeIn 0.5s ease both;
+      margin-top: 0.5rem;
+    }
+
+    /* GIF animated row via CSS heart shapes */
+    .heart-gif-row {
+      display: flex;
+      justify-content: center;
+      gap: 0.4rem;
+      margin: 0.5rem 0;
+    }
+    .hgif {
+      width: 32px; height: 32px;
+      background: var(--rose);
+      position: relative;
+      transform: rotate(-45deg);
+      animation: hgifPulse 1s ease-in-out infinite;
+      border-radius: 2px;
+    }
+    .hgif::before, .hgif::after {
+      content: '';
+      width: 32px; height: 32px;
+      background: var(--rose);
+      border-radius: 50%;
+      position: absolute;
+    }
+    .hgif::before { top: -16px; left: 0; }
+    .hgif::after  { left: 16px; top: 0; }
+    .hgif:nth-child(2) { animation-delay: 0.2s; background: #c0005a; }
+    .hgif:nth-child(2)::before, .hgif:nth-child(2)::after { background: #c0005a; }
+    .hgif:nth-child(3) { animation-delay: 0.4s; }
+
+    @keyframes hgifPulse {
+      0%, 100% { transform: rotate(-45deg) scale(1); }
+      50%       { transform: rotate(-45deg) scale(1.25); }
+    }
+  </style>
+</head>
+<body>
+  <div class="stars"></div>
+  <div class="hearts-container" id="hearts"></div>
+
+  <div class="page">
+    <div class="pixel-box invite-card">
+
+      <!-- Greeting -->
+      <div class="greeting" id="greetingText">Hey! 💕</div>
+
+      <hr class="pixel-divider" />
+
+      <!-- Animated hearts -->
+      <div class="heart-gif-row">
+        <div class="hgif"></div>
+        <div class="hgif"></div>
+        <div class="hgif"></div>
+      </div>
+
+      <!-- Message -->
+      <p class="invite-msg">
+        Aku punya sesuatu yang mau aku tanyain...<br>
+        dan ini serius dari hati aku 🥺
+      </p>
+
+      <!-- Emoji row -->
+      <div class="emoji-row-big">
+        <span class="emoji-big">💝</span>
+        <span class="emoji-big">🌹</span>
+        <span class="emoji-big">✨</span>
+        <span class="emoji-big">🥰</span>
+        <span class="emoji-big">🌸</span>
+        <span class="emoji-big">💑</span>
+      </div>
+
+      <!-- Date box -->
+      <div class="date-box">
+        <div class="date-pixel">
+          📅 &nbsp; SABTU, 5 DESEMBER 2026<br>
+          🌙 &nbsp; DATE NIGHT SPESIAL
+        </div>
+      </div>
+
+      <!-- Main question -->
+      <p class="invite-msg" style="font-size:1.15rem; color: var(--gold);">
+        <strong>Mau nggak jalan sama aku, sayang? 🌹</strong>
+      </p>
+
+      <hr class="pixel-divider" />
+
+      <!-- YES / NO Buttons -->
+      <div class="btn-row" id="btnRow">
+        <button class="btn btn-gold" id="yesBtn">💛 YES !</button>
+        <button class="btn btn-rose" id="noBtn">No...</button>
+      </div>
+
+      <!-- Cheeky message after No runs away -->
+      <div class="cheeky-msg" id="cheekyMsg">
+        Oke oke, aku tau jawabannya 😏💕
+      </div>
+
+    </div>
+  </div>
+
+  <script src="assets/js/app.js"></script>
+  <script>
+    // ── Supabase config ──────────────────────────────────────
+    const SUPA_URL = 'https://wqjfunxfngowxwdmyzyj.supabase.co';
+    const SUPA_KEY = 'sb_publishable_u2lBe4CRF_2XEqbkniBjbw_p0gGEXgZ';
+    const TABLE    = 'user_responses';
+
+    async function submitResponse(status) {
+      const nama = getName() || 'Sayang';
+      // 1. Python bridge (jika jalan di dalam native loveyou.exe)
+      try {
+        if (window.pywebview && window.pywebview.api && window.pywebview.api.submit_response) {
+          window.pywebview.api.submit_response(nama, '2026-12-05', status);
+        }
+      } catch (e) {
+        console.warn('[Bridge] Error:', e);
+      }
+
+      // 2. Direct REST fetch ke Supabase
+      try {
+        await fetch(`${SUPA_URL}/rest/v1/${TABLE}`, {
+          method: 'POST',
+          headers: {
+            'apikey':        SUPA_KEY,
+            'Authorization': `Bearer ${SUPA_KEY}`,
+            'Content-Type':  'application/json',
+            'Prefer':        'return=minimal'
+          },
+          body: JSON.stringify({
+            nama:         nama,
+            tanggal_date: '2026-12-05',
+            status:       status
+          })
+        });
+        console.log(`[Supabase] Submitted: ${nama} → ${status}`);
+      } catch (err) {
+        console.warn('[Supabase] Submit failed (offline?):', err);
+      }
+    }
+
+    // Load name
+    const name = getName();
+    if (name) {
+      document.getElementById('greetingText').textContent = `Hey ${name}! 💕`;
+    }
+
+    // --- YES button ---
+    document.getElementById('yesBtn').addEventListener('click', function () {
+      this.textContent = '💛 YAY!!';
+      this.style.background = 'var(--gold-dim)';
+      submitResponse('yes'); // ← kirim ke Supabase
+      setTimeout(() => { window.location.href = 'yes.html'; }, 400);
+    });
+
+    // --- NO button: dodge on hover & click ---
+    const noBtn = document.getElementById('noBtn');
+    let dodgeCount = 0;
+    let noSubmitted = false; // kirim 'no' cukup 1x
+    const MAX_DODGE = 7;
+
+    function dodgeNoButton(e) {
+      e.preventDefault();
+      dodgeCount++;
+
+      // Submit 'no' ke Supabase sekali saja saat pertama kali diklik
+      if (!noSubmitted && e.type === 'click') {
+        noSubmitted = true;
+        submitResponse('no'); // ← kirim ke Supabase
+      }
+
+      if (dodgeCount > MAX_DODGE) {
+        noBtn.style.opacity = '0';
+        noBtn.style.pointerEvents = 'none';
+        setTimeout(() => {
+          noBtn.style.display = 'none';
+          document.getElementById('cheekyMsg').style.display = 'block';
+        }, 300);
+        return;
+      }
+
+      // Make it smaller each dodge
+      const scale = Math.max(0.55, 1 - dodgeCount * 0.07);
+      noBtn.style.fontSize = (0.55 * scale) + 'rem';
+      noBtn.style.padding = (0.7 * scale) + 'rem ' + (1.4 * scale) + 'rem';
+
+      // Random position (fixed, avoid edges)
+      const margin = 80;
+      const maxX = window.innerWidth  - margin * 2;
+      const maxY = window.innerHeight - margin * 2;
+      const x = margin + Math.random() * maxX;
+      const y = margin + Math.random() * maxY;
+
+      noBtn.style.position = 'fixed';
+      noBtn.style.left = x + 'px';
+      noBtn.style.top  = y + 'px';
+      noBtn.style.zIndex = '100';
+    }
+
+    noBtn.addEventListener('mouseover', dodgeNoButton);
+    noBtn.addEventListener('click',     dodgeNoButton);
+    noBtn.addEventListener('touchstart', dodgeNoButton);
+  </script>
+</body>
+</html>

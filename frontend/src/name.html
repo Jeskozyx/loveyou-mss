@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>❤️ Siapa Namamu?</title>
+  <link rel="stylesheet" href="assets/css/style.css" />
+  <style>
+    .name-card {
+      width: min(420px, 92vw);
+      padding: 2.5rem 2rem;
+      text-align: center;
+      animation: slideUp 0.7s cubic-bezier(0.22,1,0.36,1) both;
+    }
+
+    .question-text {
+      font-family: var(--cursive);
+      font-size: 2rem;
+      color: var(--rose-pale);
+      line-height: 1.5;
+      margin-bottom: 0.4rem;
+    }
+
+    .sub-label {
+      font-family: var(--pixel);
+      font-size: 0.45rem;
+      color: var(--text-dim);
+      letter-spacing: 2px;
+      margin-bottom: 1.8rem;
+      display: block;
+    }
+
+    .input-wrap {
+      position: relative;
+      margin-bottom: 1.6rem;
+    }
+
+    .retro-input {
+      font-size: 1.3rem;
+      text-align: center;
+      letter-spacing: 2px;
+    }
+
+    .error-msg {
+      font-family: var(--pixel);
+      font-size: 0.45rem;
+      color: var(--rose-light);
+      text-shadow: var(--glow-rose);
+      margin-top: 0.5rem;
+      display: none;
+      animation: blink 1s step-end infinite;
+    }
+
+    .btn-enter {
+      font-size: 0.6rem;
+      padding: 1rem 2.2rem;
+      margin-top: 0.4rem;
+      letter-spacing: 2px;
+    }
+
+    .back-link {
+      display: block;
+      margin-top: 1.5rem;
+      font-family: var(--pixel);
+      font-size: 0.4rem;
+      color: var(--text-dim);
+      text-decoration: none;
+      letter-spacing: 1px;
+      transition: color 0.2s;
+    }
+    .back-link:hover { color: var(--rose-light); }
+  </style>
+</head>
+<body>
+  <div class="stars"></div>
+  <div class="hearts-container" id="hearts"></div>
+
+  <div class="page">
+    <div class="pixel-box name-card">
+
+      <!-- Icon -->
+      <div style="font-size:2.5rem; margin-bottom:1rem;">
+        <span class="heart-beat">🌹</span>
+      </div>
+
+      <!-- Question -->
+      <p class="question-text typewriter-cursor" id="typewriterText"></p>
+      <span class="sub-label">— ketik namamu di bawah ini —</span>
+
+      <hr class="pixel-divider" />
+
+      <!-- Input -->
+      <div class="input-wrap">
+        <input
+          type="text"
+          id="nameInput"
+          class="retro-input"
+          placeholder="nama kamu..."
+          maxlength="30"
+          autocomplete="off"
+          spellcheck="false"
+        />
+        <div class="error-msg" id="errMsg">⚠ isi dulu ya, sayang!</div>
+      </div>
+
+      <!-- Button -->
+      <button class="btn btn-rose btn-enter" id="enterBtn">ENTER ❤️</button>
+
+      <!-- Back -->
+      <a href="index.html" class="back-link">← kembali</a>
+    </div>
+  </div>
+
+  <script src="assets/js/app.js"></script>
+  <script>
+    // Typewriter effect for question
+    typewriter('typewriterText', 'Siapa nama kamu, sayang? 🌹', 60);
+
+    const input   = document.getElementById('nameInput');
+    const errMsg  = document.getElementById('errMsg');
+    const enterBtn = document.getElementById('enterBtn');
+
+    function goNext() {
+      const val = input.value.trim();
+      if (!val) {
+        errMsg.style.display = 'block';
+        input.focus();
+        input.classList.add('retro-input');
+        input.style.borderColor = 'var(--rose-light)';
+        setTimeout(() => { errMsg.style.display = 'none'; input.style.borderColor = ''; }, 2500);
+        return;
+      }
+      setName(val);
+      enterBtn.textContent = '✓ OK!';
+      enterBtn.style.background = 'var(--rose)';
+      setTimeout(() => { window.location.href = 'invite.html'; }, 350);
+    }
+
+    enterBtn.addEventListener('click', goNext);
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') goNext(); });
+
+    // Auto focus input after typewriter delay
+    setTimeout(() => input.focus(), 1800);
+  </script>
+</body>
+</html>

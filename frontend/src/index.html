@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>❤️ LoveYou</title>
+  <link rel="stylesheet" href="assets/css/style.css" />
+  <style>
+    /* ---- PLAY BUTTON ---- */
+    .play-wrap {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 2.5rem;
+    }
+
+    .title-pixel {
+      font-family: var(--pixel);
+      font-size: 1.1rem;
+      color: var(--rose-light);
+      text-shadow: var(--glow-rose);
+      text-align: center;
+      line-height: 2.4;
+      animation: fadeIn 1.2s ease both;
+    }
+
+    .subtitle-cursive {
+      font-family: var(--cursive);
+      font-size: 1.8rem;
+      color: var(--gold);
+      text-shadow: var(--glow-gold);
+      text-align: center;
+      animation: fadeIn 1.8s ease both;
+    }
+
+    .play-btn {
+      position: relative;
+      width: 120px;
+      height: 120px;
+      border-radius: 50%;
+      background: transparent;
+      border: 4px solid var(--rose-light);
+      box-shadow: var(--glow-rose), 0 0 60px #e8225a44;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.2s;
+      animation: pulsePlay 2s ease-in-out infinite, fadeIn 2s ease both;
+    }
+    .play-btn::before {
+      content: '';
+      width: 0;
+      height: 0;
+      border-style: solid;
+      border-width: 22px 0 22px 42px;
+      border-color: transparent transparent transparent var(--rose-light);
+      margin-left: 8px;
+      filter: drop-shadow(0 0 8px #e8225a);
+      transition: border-color 0.2s;
+    }
+    .play-btn:hover {
+      background: rgba(232, 34, 90, 0.15);
+      box-shadow: 0 0 40px #e8225a, 0 0 80px #e8225a66;
+      transform: scale(1.1);
+    }
+    .play-btn:hover::before {
+      border-color: transparent transparent transparent #fff;
+    }
+    .play-btn:active { transform: scale(0.95); }
+
+    @keyframes pulsePlay {
+      0%, 100% { box-shadow: var(--glow-rose), 0 0 30px #e8225a44; }
+      50%       { box-shadow: 0 0 30px #e8225a, 0 0 70px #e8225a66; }
+    }
+
+    .pixel-hint {
+      font-family: var(--pixel);
+      font-size: 0.45rem;
+      color: var(--text-dim);
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      animation: blink 1.4s step-end infinite;
+    }
+
+    .deco-row {
+      display: flex;
+      gap: 1rem;
+      font-size: 1.5rem;
+      animation: fadeIn 2.5s ease both;
+    }
+  </style>
+</head>
+<body>
+  <div class="stars"></div>
+  <div class="hearts-container" id="hearts"></div>
+
+  <div class="page">
+    <div class="play-wrap">
+      <!-- Title -->
+      <div class="title-pixel">
+        ❤️ &nbsp; L O V E &nbsp; Y O U &nbsp; ❤️
+      </div>
+
+      <!-- Subtitle -->
+      <div class="subtitle-cursive">
+        ~ ada sesuatu untukmu ~
+      </div>
+
+      <hr class="pixel-divider" style="width:260px;" />
+
+      <!-- Play Button -->
+      <button class="play-btn" id="playBtn" aria-label="Play"></button>
+      <span class="pixel-hint">▸ klik untuk membuka ◂</span>
+
+      <hr class="pixel-divider" style="width:260px;" />
+
+      <!-- Deco Emojis -->
+      <div class="deco-row">
+        <span class="heart-beat">💖</span>
+        <span class="heart-beat" style="animation-delay:.3s">🌹</span>
+        <span class="heart-beat" style="animation-delay:.6s">✨</span>
+        <span class="heart-beat" style="animation-delay:.9s">🌹</span>
+        <span class="heart-beat" style="animation-delay:1.2s">💖</span>
+      </div>
+    </div>
+  </div>
+
+  <script src="assets/js/app.js"></script>
+  <script>
+    document.getElementById('playBtn').addEventListener('click', function () {
+      this.style.transform = 'scale(0.9)';
+      setTimeout(() => { window.location.href = 'name.html'; }, 220);
+    });
+  </script>
+</body>
+</html>
