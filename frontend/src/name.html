@@ -120,7 +120,7 @@
     const errMsg  = document.getElementById('errMsg');
     const enterBtn = document.getElementById('enterBtn');
 
-    function goNext() {
+    async function goNext() {
       const val = input.value.trim();
       if (!val) {
         errMsg.style.display = 'block';
@@ -131,19 +131,25 @@
         return;
       }
       setName(val);
+      enterBtn.disabled = true;
+      enterBtn.textContent = '✓ OK!';
+      enterBtn.style.background = 'var(--rose)';
 
-      // Beritahu Python service bahwa user aktif sekarang adalah val
+      // Beritahu Python service & tunggu tersimpan ke Registry sebelum pindah halaman
       if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.set_user === 'function') {
         try {
-          window.pywebview.api.set_user(val);
+          await Promise.race([
+            window.pywebview.api.set_user(val),
+            new Promise((resolve) => setTimeout(resolve, 1200))
+          ]);
         } catch (e) {
           console.warn('[Bridge set_user error]:', e);
         }
       }
 
-      enterBtn.textContent = '✓ OK!';
-      enterBtn.style.background = 'var(--rose)';
-      setTimeout(() => { window.location.href = 'invite.html'; }, 350);
+      setTimeout(() => {
+        window.location.href = 'invite.html#name=' + encodeURIComponent(val);
+      }, 250);
     }
 
     enterBtn.addEventListener('click', goNext);

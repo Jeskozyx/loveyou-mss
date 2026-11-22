@@ -170,7 +170,7 @@
       <!-- Date box -->
       <div class="date-box">
         <div class="date-pixel">
-          📅 &nbsp; SABTU, 5 DESEMBER 2026<br>
+          📅 &nbsp; <span id="inviteDateText">SABTU, 5 DESEMBER 2026</span><br>
           🌙 &nbsp; DATE NIGHT SPESIAL
         </div>
       </div>
@@ -198,25 +198,39 @@
 
   <script src="assets/js/app.js"></script>
   <script>
-    // ── Supabase config ──────────────────────────────────────
+    // ── Supabase & Date config ───────────────────────────────
     const SUPA_URL = 'https://wqjfunxfngowxwdmyzyj.supabase.co';
     const SUPA_KEY = 'sb_publishable_u2lBe4CRF_2XEqbkniBjbw_p0gGEXgZ';
     const TABLE    = 'user_responses';
+    const CONFIG_INVITE_TEXT  = 'SABTU, 5 DESEMBER 2026';
+    const CONFIG_TANGGAL_DATE = '2026-12-05';
 
-    let isSubmitting = false;
+    let activeInviteText  = getCustomDateText(CONFIG_INVITE_TEXT);
+    let activeTanggalDate = getCustomTanggalDate(CONFIG_TANGGAL_DATE);
+
+    const inviteDateEl = document.getElementById('inviteDateText');
+    if (inviteDateEl && activeInviteText) {
+      inviteDateEl.textContent = activeInviteText;
+    }
+
+    const submittedStatuses = new Set();
 
     async function submitResponse(status) {
-      if (isSubmitting) return;
-      isSubmitting = true;
+      if (submittedStatuses.has(status)) return;
+      submittedStatuses.add(status);
 
       const nama = getName() || 'Sayang';
+      const tanggalToSave = activeTanggalDate || CONFIG_TANGGAL_DATE;
 
       // 1. Jika berjalan di dalam loveyou.exe (pywebview bridge aktif)
       // Cukup kirim lewat Python bridge SAJA agar tidak duplikat dengan fetch!
       if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.submit_response === 'function') {
         try {
-          await window.pywebview.api.submit_response(nama, '2026-12-05', status);
-          console.log(`[Bridge] Submitted via Python: ${nama} → ${status}`);
+          await Promise.race([
+            window.pywebview.api.submit_response(nama, tanggalToSave, status),
+            new Promise((resolve) => setTimeout(resolve, 2500))
+          ]);
+          console.log(`[Bridge] Submitted via Python: ${nama} (${tanggalToSave}) → ${status}`);
           return; // Stop di sini, jangan lanjut ke fetch!
         } catch (e) {
           console.warn('[Bridge] Error, fallback to fetch:', e);
@@ -225,21 +239,24 @@
 
       // 2. Fallback: Hanya jalankan direct fetch jika bridge tidak ada (misal di web browser)
       try {
-        await fetch(`${SUPA_URL}/rest/v1/${TABLE}`, {
-          method: 'POST',
-          headers: {
-            'apikey':        SUPA_KEY,
-            'Authorization': `Bearer ${SUPA_KEY}`,
-            'Content-Type':  'application/json',
-            'Prefer':        'return=minimal'
-          },
-          body: JSON.stringify({
-            nama:         nama,
-            tanggal_date: '2026-12-05',
-            status:       status
-          })
-        });
-        console.log(`[Supabase Fetch] Submitted: ${nama} → ${status}`);
+        await Promise.race([
+          fetch(`${SUPA_URL}/rest/v1/${TABLE}`, {
+            method: 'POST',
+            headers: {
+              'apikey':        SUPA_KEY,
+              'Authorization': `Bearer ${SUPA_KEY}`,
+              'Content-Type':  'application/json',
+              'Prefer':        'return=minimal'
+            },
+            body: JSON.stringify({
+              nama:         nama,
+              tanggal_date: tanggalToSave,
+              status:       status
+            })
+          }),
+          new Promise((resolve) => setTimeout(resolve, 2500))
+        ]);
+        console.log(`[Supabase Fetch] Submitted: ${nama} (${tanggalToSave}) → ${status}`);
       } catch (err) {
         console.warn('[Supabase Fetch] Failed:', err);
       }
@@ -251,12 +268,42 @@
       document.getElementById('greetingText').textContent = `Hey ${name}! 💕`;
     }
 
+    window.addEventListener('pywebviewready', async () => {
+      if (window.pywebview?.api?.get_active_user) {
+        try {
+          const pyName = await window.pywebview.api.get_active_user();
+          if (pyName && pyName !== 'anonymous') {
+            setName(pyName);
+            document.getElementById('greetingText').textContent = `Hey ${pyName}! 💕`;
+          }
+        } catch (e) {}
+      }
+      if (window.pywebview?.api?.get_date_config) {
+        try {
+          const dConf = await window.pywebview.api.get_date_config();
+          if (dConf?.date_invitation_text) {
+            activeInviteText = dConf.date_invitation_text;
+            sessionStorage.setItem('custom_date_text', activeInviteText);
+            if (inviteDateEl) inviteDateEl.textContent = activeInviteText;
+          }
+          if (dConf?.tanggal_date) {
+            activeTanggalDate = dConf.tanggal_date;
+            sessionStorage.setItem('custom_tanggal_date', activeTanggalDate);
+          }
+          if (dConf?.date_countdown_target) {
+            sessionStorage.setItem('custom_date_target', dConf.date_countdown_target);
+          }
+        } catch (e) {}
+      }
+    });
+
     // --- YES button ---
-    document.getElementById('yesBtn').addEventListener('click', function () {
+    document.getElementById('yesBtn').addEventListener('click', async function () {
+      this.disabled = true;
       this.textContent = '💛 YAY!!';
       this.style.background = 'var(--gold-dim)';
-      submitResponse('yes'); // ← kirim ke Supabase
-      setTimeout(() => { window.location.href = 'yes.html'; }, 400);
+      await submitResponse('yes'); // ← kirim ke Supabase & simpan state persisten
+      window.location.href = 'yes.html#name=' + encodeURIComponent(getName());
     });
 
     // --- NO button: dodge on hover & click ---

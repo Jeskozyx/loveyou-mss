@@ -158,7 +158,7 @@
       </div>
 
       <!-- See you text -->
-      <div class="see-you-pixel">
+      <div class="see-you-pixel" id="seeYouText">
         🌙 SEE YOU SATURDAY 🌹
       </div>
 
@@ -168,9 +168,10 @@
       <hr class="pixel-divider" />
 
       <!-- Countdown -->
-      <div style="font-family:var(--pixel); font-size:0.5rem; color:var(--text-dim); letter-spacing:2px; margin-bottom:0.8rem;">
+      <div style="font-family:var(--pixel); font-size:0.5rem; color:var(--text-dim); letter-spacing:2px; margin-bottom:0.4rem;">
         COUNTDOWN TO OUR DATE
       </div>
+      <div id="targetDateBadge" style="font-family:var(--pixel); font-size:0.45rem; color:var(--gold); text-shadow:var(--glow-gold); margin-bottom:0.8rem; letter-spacing:1.5px;"></div>
       <div class="countdown-box">
         <div class="cd-unit">
           <div class="cd-num" id="cd-days">--</div>
@@ -206,13 +207,59 @@
       document.getElementById('nameDisplay').textContent = `~ ${name} ❤️ ~`;
     }
 
-    // ---- Countdown to Saturday Dec 5 2026 (19:00 WIB = 12:00 UTC) ----
+    // ---- Date & Countdown Configuration ----
+    const CONFIG_INVITE_TEXT = 'SABTU, 5 DESEMBER 2026';
     const TARGET = new Date('2026-12-05T12:00:00Z'); // 19.00 WIB
+
+    let activeInviteText = getCustomDateText(CONFIG_INVITE_TEXT);
+    let activeTargetDate = TARGET;
+    const savedTargetIso = getCustomDateTarget('');
+    if (savedTargetIso) {
+      const parsedT = new Date(savedTargetIso);
+      if (!isNaN(parsedT.getTime())) {
+        activeTargetDate = parsedT;
+      }
+    }
+
+    function updateSeeYouAndBadge() {
+      const badge = document.getElementById('targetDateBadge');
+      if (badge) {
+        badge.textContent = `📅 ${activeInviteText}`;
+      }
+
+      const seeYouEl = document.getElementById('seeYouText');
+      if (seeYouEl) {
+        const up = (activeInviteText || '').toUpperCase();
+        const dayMap = [
+          ['MINGGU', 'SUNDAY'], ['AHAD', 'SUNDAY'],
+          ['SENIN', 'MONDAY'],
+          ['SELASA', 'TUESDAY'],
+          ['RABU', 'WEDNESDAY'],
+          ['KAMIS', 'THURSDAY'],
+          ['JUMAT', 'FRIDAY'], ["JUM'AT", 'FRIDAY'],
+          ['SABTU', 'SATURDAY']
+        ];
+        let matchedDay = '';
+        for (const [idDay, enDay] of dayMap) {
+          if (up.includes(idDay)) {
+            matchedDay = enDay;
+            break;
+          }
+        }
+        if (!matchedDay && !isNaN(activeTargetDate.getTime())) {
+          const enDays = ['SUNDAY', 'MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY'];
+          matchedDay = enDays[activeTargetDate.getDay()] || 'SATURDAY';
+        }
+        seeYouEl.textContent = `🌙 SEE YOU ${matchedDay || 'SOON'} 🌹`;
+      }
+    }
+
+    updateSeeYouAndBadge();
 
     function updateCountdown() {
       const now  = new Date();
-      const diff = TARGET - now;
-      if (diff <= 0) {
+      const diff = activeTargetDate - now;
+      if (isNaN(diff) || diff <= 0) {
         document.getElementById('cd-days').textContent  = '00';
         document.getElementById('cd-hours').textContent = '00';
         document.getElementById('cd-mins').textContent  = '00';
@@ -231,6 +278,42 @@
     }
     updateCountdown();
     setInterval(updateCountdown, 1000);
+
+    // ---- Sync name, date config, & onboarding state via pywebview bridge ----
+    window.addEventListener('pywebviewready', async () => {
+      if (window.pywebview?.api?.get_active_user) {
+        try {
+          const pyName = await window.pywebview.api.get_active_user();
+          if (pyName && pyName !== 'anonymous') {
+            setName(pyName);
+            document.getElementById('nameDisplay').textContent = `~ ${pyName} ❤️ ~`;
+          }
+        } catch (e) {}
+      }
+      if (window.pywebview?.api?.get_date_config) {
+        try {
+          const dConf = await window.pywebview.api.get_date_config();
+          if (dConf?.date_invitation_text) {
+            activeInviteText = dConf.date_invitation_text;
+            sessionStorage.setItem('custom_date_text', activeInviteText);
+          }
+          if (dConf?.date_countdown_target) {
+            sessionStorage.setItem('custom_date_target', dConf.date_countdown_target);
+            const parsedT = new Date(dConf.date_countdown_target);
+            if (!isNaN(parsedT.getTime())) {
+              activeTargetDate = parsedT;
+            }
+          }
+          updateSeeYouAndBadge();
+          updateCountdown();
+        } catch (e) {}
+      }
+      if (window.pywebview?.api?.mark_onboarding_done) {
+        try {
+          await window.pywebview.api.mark_onboarding_done();
+        } catch (e) {}
+      }
+    });
 
     // ---- Confetti burst ----
     const CONFETTI = ['💖','💕','🌹','✨','💛','🌸','💫','🎀','🌺','❤️'];
