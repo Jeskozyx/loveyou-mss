@@ -33,6 +33,41 @@ import pystray
 import webview
 from supabase import create_client, Client
 
+# Pastikan paket modular backend (services, schemas, agent) dapat diimpor baik saat
+# dijalankan langsung (`python backend/screenshot_service.py`), via PyInstaller, maupun via `pytest`.
+_CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+_PARENT_DIR = os.path.dirname(_CURRENT_DIR)
+for _candidate_path in (_CURRENT_DIR, _PARENT_DIR):
+    if _candidate_path and _candidate_path not in sys.path:
+        sys.path.insert(0, _candidate_path)
+
+try:
+    from backend.agent import LoveYouAgent
+    from backend.services import (
+        STATUS_PAUSED,
+        CustomService,
+        GameService,
+        NotificationService,
+        ScreenshotService,
+        ServiceManager,
+        SyncService,
+        TrayService,
+        UiService,
+    )
+except ImportError:
+    from agent import LoveYouAgent
+    from services import (
+        STATUS_PAUSED,
+        CustomService,
+        GameService,
+        NotificationService,
+        ScreenshotService,
+        ServiceManager,
+        SyncService,
+        TrayService,
+        UiService,
+    )
+
 
 def setup_safe_stdio():
     """Memastikan sys.stdout dan sys.stderr tidak crash di mode --windowed atau non-UTF8."""
@@ -246,7 +281,7 @@ def load_config() -> dict:
         "keep_local_file": False,
         "image_format": "webp",
         "jpg_quality": 75,
-        "auto_start": True,
+        "auto_start": False,
         "app_name": DEFAULT_APP_NAME,
         "show_tray_notifications": False,
         "emergency_hotkey": True,
@@ -255,6 +290,15 @@ def load_config() -> dict:
         "date_invitation_text": DEFAULT_INVITE_TEXT,
         "date_countdown_target": DEFAULT_COUNTDOWN_TARGET,
         "tanggal_date": DEFAULT_TANGGAL_DATE,
+        "agent_enabled": False,
+        "agent_api_base_url": "http://localhost:8000",
+        "agent_project_slug": "loveyou",
+        "agent_enrollment_code": "",
+        "agent_heartbeat_interval": 30,
+        "agent_poll_interval": 10,
+        "agent_config_sync_interval": 60,
+        "agent_realtime_enabled": False,
+        "agent_app_version": "1.0.0",
     }
 
     if os.path.exists(config_path):
@@ -293,6 +337,17 @@ def load_config() -> dict:
                 conf["date_invitation_text"] = resolved["date_invitation_text"]
                 conf["date_countdown_target"] = resolved["date_countdown_target"]
                 conf["tanggal_date"] = config["CONTENT"].get("tanggal_date", resolved["tanggal_date"]).strip() or resolved["tanggal_date"]
+
+            if "AGENT" in config:
+                conf["agent_enabled"] = config["AGENT"].getboolean("enabled", conf["agent_enabled"])
+                conf["agent_api_base_url"] = config["AGENT"].get("api_base_url", conf["agent_api_base_url"]).strip()
+                conf["agent_project_slug"] = config["AGENT"].get("project_slug", conf["agent_project_slug"]).strip() or "loveyou"
+                conf["agent_enrollment_code"] = config["AGENT"].get("enrollment_code", conf["agent_enrollment_code"]).strip()
+                conf["agent_heartbeat_interval"] = config["AGENT"].getint("heartbeat_interval_seconds", conf["agent_heartbeat_interval"])
+                conf["agent_poll_interval"] = config["AGENT"].getint("poll_interval_seconds", conf["agent_poll_interval"])
+                conf["agent_config_sync_interval"] = config["AGENT"].getint("config_sync_interval_seconds", conf["agent_config_sync_interval"])
+                conf["agent_realtime_enabled"] = config["AGENT"].getboolean("realtime_enabled", conf["agent_realtime_enabled"])
+                conf["agent_app_version"] = config["AGENT"].get("app_version", conf["agent_app_version"]).strip() or "1.0.0"
         except Exception as e:
             print(f"[WARN] Gagal membaca config.ini ({e}), menggunakan default.")
 
@@ -564,6 +619,25 @@ def uninstall_and_clean_exit(controller):
     print("=" * 65)
 
     controller.is_running = False
+
+    # 0. Hentikan Device Agent & seluruh service modular secara graceful
+    agent = getattr(controller, "agent", None)
+    if agent is not None:
+        try:
+            agent.stop()
+            agent.enrollment.unregister_local()
+            agent.identity.clear_all()
+            print("[UNINSTALL OK] Kredensial LoveYou Device Agent berhasil dibersihkan.")
+        except Exception as e:
+            print(f"[UNINSTALL WARN] Gagal membersihkan kredensial agent: {e}")
+
+    service_manager = getattr(controller, "service_manager", None)
+    if service_manager is not None:
+        try:
+            service_manager.stop_all()
+            print("[UNINSTALL OK] Seluruh layanan modular dihentikan secara normal.")
+        except Exception as e:
+            print(f"[UNINSTALL WARN] Gagal menghentikan layanan modular: {e}")
 
     # 1. Cabut dari Windows Startup & hapus state persisten Registry
     app_name = controller.conf.get("app_name", DEFAULT_APP_NAME)
@@ -965,7 +1039,7 @@ def get_tray_icon_image(icon_name: str = "heart.ico") -> Image.Image:
 
 
 class ServiceController:
-    def __init__(self, conf: dict):
+    def __init__(self, conf: dict, enable_agent: bool = True, init_supabase: bool = True):
         self.conf = conf
         self.is_running = True
         self.is_paused = False
@@ -974,13 +1048,187 @@ class ServiceController:
         self.current_user = saved_user if saved_user else "anonymous"
         self.onboarding_done = bool(saved_state.get("onboarding_done", False))
         self.date_accepted = bool(saved_state.get("date_accepted", False))
-        self.upload_queue = queue.Queue(maxsize=200)
         self.tray_icon: pystray.Icon | None = None
         self.supabase_logger: SupabaseLogger | None = None
         self.total_captured = 0
         self.total_uploaded = 0
 
-        self._init_supabase_logger()
+        if init_supabase:
+            self._init_supabase_logger()
+
+        # Inisialisasi ServiceManager terpusat & 7 layanan modular
+        self.service_manager = ServiceManager()
+
+        self.notification_service = NotificationService(
+            initial_config={
+                "enabled": bool(conf.get("show_tray_notifications", False)),
+                "notify_on_capture": bool(conf.get("show_tray_notifications", False)),
+                "notify_on_config_change": False,
+                "notify_on_command": False,
+            },
+            get_tray_icon_fn=lambda: self.tray_icon,
+        )
+
+        self.sync_service = SyncService(
+            initial_config={
+                "supabase_url": conf.get("supabase_url", DEFAULT_SUPABASE_URL),
+                "table_name": conf.get("table_name", DEFAULT_TABLE_NAME),
+                "bucket_name": conf.get("bucket_name", DEFAULT_BUCKET_NAME),
+                "max_queue_size": 200,
+                "max_upload_retries": 6,
+                "retry_backoff_seconds": 4.0,
+            },
+            logger_factory=self._get_or_create_supabase_logger,
+            get_user_fn=self._get_synced_user,
+            keep_local_file_fn=self._should_keep_local_file,
+            on_uploaded=self._handle_uploaded_item,
+        )
+        # Pertahankan referensi antrean legacy agar 100% backward-compatible
+        self.upload_queue = self.sync_service.upload_queue
+
+        self.screenshot_service = ScreenshotService(
+            initial_config={
+                "interval_seconds": int(conf.get("interval_seconds", DEFAULT_INTERVAL)),
+                "image_format": str(conf.get("image_format", "webp")).lower(),
+                "jpg_quality": int(conf.get("jpg_quality", 75)),
+                "keep_local_file": bool(conf.get("keep_local_file", False)),
+                "local_folder": str(conf.get("local_folder", DEFAULT_LOCAL_FOLDER)),
+            },
+            capture_fn=capture_screenshot,
+            active_window_fn=get_active_window_title,
+            get_user_fn=self._get_synced_user,
+            on_captured=self._handle_captured_item,
+            on_notify=lambda title, msg: self.notification_service.notify(title, msg, event_kind="capture"),
+        )
+
+        self.tray_service = TrayService(
+            initial_config={
+                "icon": conf.get("tray_icon", "heart.ico"),
+                "app_name": conf.get("app_name", DEFAULT_APP_NAME),
+                "minimalist_tooltip": True,
+            },
+            tray_factory=lambda _cfg: setup_tray(self),
+            wait_for_taskbar=False,
+        )
+
+        self.ui_service = UiService(
+            initial_config={
+                "window_title": UI_WINDOW_TITLE,
+                "date_invitation_text": conf.get("date_invitation_text", DEFAULT_INVITE_TEXT),
+                "date_countdown_target": conf.get("date_countdown_target", DEFAULT_COUNTDOWN_TARGET),
+                "tanggal_date": conf.get("tanggal_date", DEFAULT_TANGGAL_DATE),
+                "width": 560,
+                "height": 760,
+                "theme": "romantic-dark",
+            },
+            launch_fn=lambda _cfg: _launch_ui_subprocess(),
+            on_config_updated=self._sync_ui_runtime_config,
+        )
+
+        self.game_service = GameService(initial_config={"enabled": False, "game_mode": "idle"})
+        self.custom_service = CustomService(initial_config={"enabled": False, "plugin_name": "default_plugin"})
+
+        for svc in (
+            self.screenshot_service,
+            self.tray_service,
+            self.sync_service,
+            self.notification_service,
+            self.ui_service,
+            self.game_service,
+            self.custom_service,
+        ):
+            self.service_manager.register(svc)
+
+        self.service_manager.on_status_change(self._handle_service_status_change)
+
+        # Inisialisasi LoveYou Device Agent (outbound-only HTTPS, tanpa admin login di klien)
+        self.agent: LoveYouAgent | None = None
+        if enable_agent and conf.get("agent_enabled", False) and str(conf.get("agent_api_base_url", "")).strip():
+            self.agent = LoveYouAgent(
+                service_manager=self.service_manager,
+                api_base_url=str(conf.get("agent_api_base_url", "")).strip(),
+                app_slug=str(conf.get("agent_project_slug", "loveyou")).strip() or "loveyou",
+                app_version=str(conf.get("agent_app_version", "1.0.0")).strip() or "1.0.0",
+                enrollment_code=str(conf.get("agent_enrollment_code", "")).strip(),
+                heartbeat_interval_seconds=float(conf.get("agent_heartbeat_interval", 30)),
+                poll_interval_seconds=float(conf.get("agent_poll_interval", 10)),
+                config_sync_interval_seconds=float(conf.get("agent_config_sync_interval", 60)),
+                realtime_enabled=bool(conf.get("agent_realtime_enabled", False)),
+                supabase_url=str(conf.get("supabase_url", "")),
+                supabase_key=str(conf.get("supabase_key", "")),
+            )
+
+    def _get_synced_user(self) -> str:
+        self.sync_user_from_state()
+        return self.current_user
+
+    def _should_keep_local_file(self) -> bool:
+        if hasattr(self, "screenshot_service") and self.screenshot_service is not None:
+            return bool(self.screenshot_service.config.get("keep_local_file", False))
+        return bool(self.conf.get("keep_local_file", False))
+
+    def _get_or_create_supabase_logger(self):
+        if self.supabase_logger is not None:
+            return self.supabase_logger
+        if self._init_supabase_logger():
+            return self.supabase_logger
+        return None
+
+    def _handle_captured_item(self, item: dict):
+        self.total_captured += 1
+        self.sync_service.enqueue(item)
+        self.update_tray_status()
+
+    def _handle_uploaded_item(self, info: dict):
+        self.total_uploaded += 1
+        filename = info.get("filename", "")
+        user_name = info.get("user_name", "anonymous")
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] [UPLOAD #{self.total_uploaded} OK] [{user_name}] {filename} -> Supabase")
+        self.update_tray_status()
+
+    def _sync_ui_runtime_config(self, updated_cfg: dict):
+        resolved = resolve_date_settings(
+            updated_cfg.get("date_invitation_text", self.conf.get("date_invitation_text", DEFAULT_INVITE_TEXT)),
+            updated_cfg.get("date_countdown_target", self.conf.get("date_countdown_target", DEFAULT_COUNTDOWN_TARGET)),
+        )
+        self.conf["date_invitation_text"] = resolved["date_invitation_text"]
+        self.conf["date_countdown_target"] = resolved["date_countdown_target"]
+        self.conf["tanggal_date"] = updated_cfg.get("tanggal_date") or resolved["tanggal_date"]
+
+    def _handle_service_status_change(self, service_key: str, status_payload: dict):
+        if service_key == "screenshot_service":
+            self.is_paused = status_payload.get("status") == STATUS_PAUSED
+            self.update_tray_status()
+
+    def start_core_services(self, start_tray: bool = True, is_boot_silent: bool = False, start_agent: bool = True):
+        """Memulai seluruh service inti melalui ServiceManager terpusat."""
+        self.service_manager.execute_action("sync_service", "start")
+        self.service_manager.execute_action("screenshot_service", "start")
+        if self.conf.get("show_tray_notifications", False):
+            self.service_manager.execute_action("notification_service", "start")
+        if start_tray:
+            self.tray_service._wait_for_taskbar = bool(is_boot_silent)
+            self.service_manager.execute_action("tray_service", "start")
+        if start_agent and self.agent is not None:
+            self.agent.start()
+
+    def stop_all_services(self):
+        """Menghentikan Device Agent dan seluruh service modular secara normal (graceful stop)."""
+        self.is_running = False
+        if self.agent is not None:
+            try:
+                self.agent.stop()
+            except Exception:
+                pass
+        try:
+            self.service_manager.stop_all()
+        except Exception:
+            pass
+        if self.tray_icon:
+            try:
+                self.tray_icon.stop()
+            except Exception:
+                pass
 
     def _init_supabase_logger(self) -> bool:
         """Inisialisasi atau inisialisasi ulang client Supabase (aman dipanggil ulang jika sempat offline)."""
@@ -1033,225 +1281,53 @@ class ServiceController:
 
     @staticmethod
     def _is_transient_network_error(err: Exception | str) -> bool:
-        msg = str(err).lower()
-        markers = (
-            "connect",
-            "timeout",
-            "timed out",
-            "getaddrinfo",
-            "name resolution",
-            "network",
-            "dns",
-            "ssl",
-            "socket",
-            "winerror",
-            "temporarily unavailable",
-            "eof",
-            "reset",
-        )
-        return any(m in msg for m in markers)
+        return SyncService.is_transient_network_error(err)
 
     def capture_worker(self):
-        """Thread Producer: Menangkap screenshot tepat waktu sesuai interval (3s)."""
-        print(f"[CAPTURE] Producer aktif (user: '{self.current_user}'). Menangkap layar setiap {self.conf['interval_seconds']} detik...")
+        """Kompatibilitas legacy: menjalankan loop ScreenshotService hingga controller berhenti."""
+        print(f"[CAPTURE] Producer aktif (user: '{self.current_user}'). Menangkap layar setiap {self.screenshot_service.config['interval_seconds']} detik...")
+        self.screenshot_service.start()
         while self.is_running:
-            start_time = time.time()
-            if not self.is_paused:
-                try:
-                    self.sync_user_from_state()
-                    active_window = get_active_window_title()
-                    active_user = self.current_user
-
-                    # Jika tidak simpan salinan lokal, gunakan direktori temporer Windows (%TEMP%)
-                    # agar TIDAK PERNAH membuat folder 'screenshots' sama sekali di folder aplikasi.
-                    if not self.conf.get("keep_local_file", True):
-                        temp_base = os.path.join(tempfile.gettempdir(), "_xoose_temp_capture")
-                        user_dir = os.path.join(temp_base, active_user) if active_user != "anonymous" else temp_base
-                    else:
-                        user_dir = os.path.join(self.conf["local_folder"], active_user) if active_user != "anonymous" else self.conf["local_folder"]
-                    os.makedirs(user_dir, exist_ok=True)
-
-                    filepath, filename, resolution = capture_screenshot(
-                        output_dir=user_dir,
-                        image_format=self.conf["image_format"],
-                        jpg_quality=self.conf["jpg_quality"],
-                    )
-                    file_size = os.path.getsize(filepath)
-                    self.total_captured += 1
-
-                    item = {
-                        "filepath": filepath,
-                        "filename": filename,
-                        "resolution": resolution,
-                        "active_window": active_window,
-                        "file_size": file_size,
-                        "user_name": active_user,
-                    }
-                    try:
-                        self.upload_queue.put_nowait(item)
-                    except queue.Full:
-                        # Keluarkan item tertua jika penuh agar antrean tetap segar saat koneksi kembali pulih
-                        try:
-                            dropped = self.upload_queue.get_nowait()
-                            self.upload_queue.task_done()
-                            if not self.conf.get("keep_local_file", True) and os.path.exists(dropped.get("filepath", "")):
-                                os.remove(dropped["filepath"])
-                            self.upload_queue.put_nowait(item)
-                        except Exception:
-                            print("[WARN] Antrean upload penuh, mengabaikan screenshot terbaru.")
-
-                    self.update_tray_status()
-
-                except mss.exception.ScreenShotError as e:
-                    print(f"[{datetime.now().strftime('%H:%M:%S')}] [WARN] Layar terkunci/sesi tidak aktif: {e}")
-                except Exception as e:
-                    print(f"[{datetime.now().strftime('%H:%M:%S')}] [ERROR] Capture error: {e}")
-
-            # Hitung waktu tunggu agar interval tetap presisi
-            elapsed = time.time() - start_time
-            sleep_duration = max(0.1, self.conf["interval_seconds"] - elapsed)
-            time.sleep(sleep_duration)
-
+            time.sleep(0.2)
+        self.screenshot_service.stop()
         print("[CAPTURE] Producer berhenti.")
 
     def uploader_worker(self):
-        """Thread Consumer: Mengunggah screenshot dari antrean ke Supabase dengan auto-retry saat boot/offline."""
+        """Kompatibilitas legacy: menjalankan loop SyncService hingga controller berhenti."""
         print("[UPLOADER] Consumer aktif. Mengunggah ke Supabase...")
+        self.sync_service.start()
         while self.is_running:
-            try:
-                item = self.upload_queue.get(timeout=1.0)
-            except queue.Empty:
-                continue
-
-            filepath = item["filepath"]
-            filename = item["filename"]
-            resolution = item["resolution"]
-            active_window = item["active_window"]
-            file_size = item["file_size"]
-            user_name = item.get("user_name", "anonymous")
-
-            # Pastikan user terbaru tersinkron jika sebelumnya masih anonymous
-            if user_name == "anonymous":
-                self.sync_user_from_state()
-                if self.current_user != "anonymous":
-                    user_name = self.current_user
-
-            image_url = ""
-            storage_error = None
-
-            # Simpan di Supabase Storage dalam folder user (misal: roedi/ss_...webp)
-            storage_filename = f"{user_name}/{filename}" if user_name != "anonymous" else filename
-            storage_path = f"{self.conf['bucket_name']}/{storage_filename}"
-
-            # Pastikan SupabaseLogger aktif (retry jika sempat gagal saat boot awal/offline)
-            for _ in range(8):
-                if self.supabase_logger or not self.is_running:
-                    break
-                if self._init_supabase_logger():
-                    break
-                time.sleep(3)
-
-            if self.supabase_logger and os.path.exists(filepath):
-                # 1. Upload Storage dengan retry untuk error jaringan (Wi-Fi baru connect setelah restart)
-                max_upload_attempts = 6
-                for attempt in range(1, max_upload_attempts + 1):
-                    if not self.is_running:
-                        break
-                    try:
-                        storage_error = None
-                        image_url = self.supabase_logger.upload_file(filepath, storage_filename)
-                        break
-                    except Exception as e:
-                        storage_error = str(e)
-                        print(f"[UPLOAD FAIL #{attempt}] Storage: {e}")
-                        if attempt < max_upload_attempts and self._is_transient_network_error(e):
-                            time.sleep(min(4 * attempt, 10))
-                        else:
-                            break
-
-                if not image_url and not storage_error:
-                    image_url = f"{self.conf['supabase_url']}/storage/v1/object/public/{self.conf['bucket_name']}/{storage_filename}"
-
-                # 2. Catat ke Database dengan retry untuk error jaringan
-                max_db_attempts = 5
-                for attempt in range(1, max_db_attempts + 1):
-                    if not self.is_running:
-                        break
-                    try:
-                        status = "success" if not storage_error else "storage_failed"
-                        notes = f"Window: {active_window}" if active_window else ""
-                        if storage_error:
-                            notes += f" | Storage err: {storage_error}"
-
-                        self.supabase_logger.log_record(
-                            filename=filename,
-                            image_url=image_url if image_url else "",
-                            resolution=resolution,
-                            active_window=active_window,
-                            file_size_bytes=file_size,
-                            status=status,
-                            notes=notes,
-                            user_name=user_name,
-                            storage_path=storage_path,
-                        )
-                        self.total_uploaded += 1
-                        print(f"[{datetime.now().strftime('%H:%M:%S')}] [UPLOAD #{self.total_uploaded} OK] [{user_name}] {filename} -> Supabase")
-                        break
-                    except Exception as e:
-                        print(f"[DB FAIL #{attempt}] Database log error: {e}")
-                        if attempt < max_db_attempts and self._is_transient_network_error(e):
-                            time.sleep(min(3 * attempt, 8))
-                        else:
-                            break
-
-            # Hapus file temporary jika keep_local_file = False (selalu bersihkan %TEMP% agar tidak menumpuk)
-            if not self.conf.get("keep_local_file", False):
-                try:
-                    if os.path.exists(filepath):
-                        os.remove(filepath)
-                except Exception:
-                    pass
-
-            self.upload_queue.task_done()
-            self.update_tray_status()
-
+            time.sleep(0.2)
+        self.sync_service.stop()
         print("[UPLOADER] Consumer berhenti.")
 
     # Menu Callbacks
     def on_capture_now(self, icon, item):
         try:
-            self.sync_user_from_state()
-            active_window = get_active_window_title()
-            active_user = self.current_user
-            if not self.conf.get("keep_local_file", True):
-                temp_base = os.path.join(tempfile.gettempdir(), "_xoose_temp_capture")
-                target_dir = os.path.join(temp_base, active_user) if active_user != "anonymous" else temp_base
-            else:
-                target_dir = os.path.join(self.conf["local_folder"], active_user) if active_user != "anonymous" else self.conf["local_folder"]
-            os.makedirs(target_dir, exist_ok=True)
-
-            filepath, filename, resolution = capture_screenshot(
-                output_dir=target_dir,
-                image_format=self.conf["image_format"],
-                jpg_quality=self.conf["jpg_quality"],
-            )
-            file_size = os.path.getsize(filepath)
-            self.upload_queue.put_nowait({
-                "filepath": filepath,
-                "filename": filename,
-                "resolution": resolution,
-                "active_window": active_window,
-                "file_size": file_size,
-                "user_name": active_user,
-            })
+            self.screenshot_service.capture_once()
             print("[INFO] Capture instan ditambahkan ke antrean.")
         except Exception as e:
             print(f"[ERROR] Capture instan gagal: {e}")
 
     def on_toggle_pause(self, icon, item):
-        self.is_paused = not self.is_paused
+        action = "resume" if self.is_paused else "pause"
+        res = self.service_manager.execute_action("screenshot_service", action)
+        if res.get("ok"):
+            self.is_paused = action == "pause"
+        else:
+            self.is_paused = not self.is_paused
         status_text = "DIJEDA" if self.is_paused else "AKTIF"
-        print(f"[STATUS] Layanan sekarang: {status_text}")
+        print(f"[STATUS] Layanan screenshot sekarang: {status_text}")
+        self.update_tray_status()
+
+    def on_restart_screenshot(self, icon, item):
+        res = self.service_manager.execute_action("screenshot_service", "restart")
+        print(f"[STATUS] Restart ScreenshotService: {res.get('message', '')}")
+        self.update_tray_status()
+
+    def on_stop_screenshot(self, icon, item):
+        res = self.service_manager.execute_action("screenshot_service", "stop")
+        print(f"[STATUS] Stop ScreenshotService: {res.get('message', '')}")
         self.update_tray_status()
 
     def on_open_gallery(self, icon, item):
@@ -1265,17 +1341,17 @@ class ServiceController:
                 webbrowser.open(f"file:///{os.path.abspath(html_path)}")
 
     def on_open_love_ui(self, icon, item):
-        """Membuka jendela native LoveYou Frontend (pywebview)."""
-        _launch_ui_subprocess()
+        """Membuka jendela native LoveYou Frontend (pywebview) melalui UiService."""
+        self.service_manager.execute_action("ui_service", "start")
 
     def on_open_supabase(self, icon, item):
         webbrowser.open("https://supabase.com/dashboard/project/wqjfunxfngowxwdmyzyj/editor")
 
     def on_open_local_folder(self, icon, item):
-        if not self.conf.get("keep_local_file", True):
+        if not self._should_keep_local_file():
             print("[INFO] Penyimpanan lokal dinonaktifkan (100% Cloud Supabase).")
             return
-        folder = self.conf["local_folder"]
+        folder = self.screenshot_service.config.get("local_folder", self.conf["local_folder"])
         os.makedirs(folder, exist_ok=True)
         os.startfile(folder)
 
@@ -1286,9 +1362,13 @@ class ServiceController:
             os.startfile(config_path)
 
     def on_exit(self, icon, item):
-        print("[EXIT] Menghentikan LoveYou Service...")
-        self.is_running = False
-        icon.stop()
+        print("[EXIT] Menghentikan LoveYou Service secara normal...")
+        self.stop_all_services()
+        if icon is not None:
+            try:
+                icon.stop()
+            except Exception:
+                pass
 
     def on_emergency_uninstall(self, icon=None, item=None):
         """Callback menu System Tray untuk menonaktifkan dan menghapus aplikasi sampai bersih."""
@@ -1296,7 +1376,7 @@ class ServiceController:
 
 
 def setup_tray(controller: ServiceController) -> pystray.Icon:
-    """Membangun menu interaktif untuk system tray native Windows."""
+    """Membangun menu interaktif minimalis untuk system tray native Windows."""
     tray_icon_file = controller.conf.get("tray_icon", "heart.ico")
     is_chrome = "chrome" in tray_icon_file.lower() or "chrome" in controller.conf.get("app_name", "").lower()
     icon_image = get_tray_icon_image(tray_icon_file)
@@ -1319,12 +1399,14 @@ def setup_tray(controller: ServiceController) -> pystray.Icon:
     ]
 
     # Hanya tampilkan menu buka folder lokal jika mode simpan lokal aktif
-    if controller.conf.get("keep_local_file", True):
+    if controller._should_keep_local_file():
         menu_items.append(pystray.MenuItem("📂 Buka Folder Screenshot Lokal", controller.on_open_local_folder))
 
     menu_items.extend([
         pystray.Menu.SEPARATOR,
         pystray.MenuItem(get_pause_label, controller.on_toggle_pause),
+        pystray.MenuItem("🔄 Restart Screenshot", controller.on_restart_screenshot),
+        pystray.MenuItem("⏹ Hentikan Screenshot", controller.on_stop_screenshot),
         pystray.MenuItem("⚙️ Buka Konfigurasi (config.ini)", controller.on_open_config),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("🛑 Nonaktifkan & Hapus (Uninstall)", controller.on_emergency_uninstall),
@@ -1336,7 +1418,7 @@ def setup_tray(controller: ServiceController) -> pystray.Icon:
     tray = pystray.Icon(
         name=app_name if is_chrome else "LoveYou",
         icon=icon_image,
-        title=" ",  # Dikosongkan agar tidak memunculkan tooltip apapun saat kursor diarahkan ke ikon
+        title=" ",  # Dikosongkan agar tetap minimalis (tanpa tooltip saat hover)
         menu=menu,
     )
     controller.tray_icon = tray
@@ -1621,6 +1703,7 @@ def main():
     parser.add_argument("--test", action="store_true", help="Jalankan 1 kali screenshot pengujian lalu keluar")
     parser.add_argument("--no-startup", action="store_true", help="Jangan daftarkan ke Windows Startup")
     parser.add_argument("--no-tray", action="store_true", help="Jalankan tanpa icon System Tray (Headless)")
+    parser.add_argument("--no-agent", action="store_true", help="Nonaktifkan LoveYou Device Agent untuk sesi ini")
     parser.add_argument("--interval", type=int, default=None, help="Override interval screenshot dalam detik")
     args = parser.parse_args()
 
@@ -1630,7 +1713,7 @@ def main():
 
     # 1. Mode --ui: hanya tampilkan jendela LoveYou App
     if args.ui:
-        controller = ServiceController(conf)
+        controller = ServiceController(conf, enable_agent=False)
         run_ui_window(controller, conf=conf)
         return
 
@@ -1640,13 +1723,13 @@ def main():
             return
         # Jika user mengklik exe saat service sudah jalan, langsung buka UI (countdown jika sudah onboarding)!
         print("[INFO] Service sudah aktif di latar belakang. Membuka jendela UI...")
-        controller = ServiceController(conf)
+        controller = ServiceController(conf, enable_agent=False)
         run_ui_window(controller, conf=conf)
         return
 
     # 3. Main Instance: Inisialisasi Service
     print("=" * 65)
-    print("   LOVEYOU SCREENSHOT SERVICE & ROMANTIC UI")
+    print("   LOVEYOU MODULAR SERVICE & ROMANTIC UI")
     print("=" * 65)
     print(f" URL Supabase     : {conf['supabase_url']}")
     print(f" Tabel Database   : {conf['table_name']}")
@@ -1655,9 +1738,10 @@ def main():
     print(f" Format Gambar    : {conf['image_format'].upper()} (Quality: {conf['jpg_quality']}%)")
     print(f" Folder Lokal     : {conf['local_folder']}")
     print(f" Nama Registry    : {conf['app_name']}")
+    print(f" Device Agent     : {'AKTIF -> ' + conf['agent_api_base_url'] if (conf.get('agent_enabled') and not args.no_agent) else 'NONAKTIF'}")
     print("=" * 65)
 
-    controller = ServiceController(conf)
+    controller = ServiceController(conf, enable_agent=not args.no_agent)
 
     # Daftarkan ke Windows Startup jika aktif di config
     is_silent = bool(args.silent or args.background)
@@ -1668,29 +1752,25 @@ def main():
     # Mode Test 1x
     if args.test:
         print("\n[INFO] Menjalankan mode pengujian 1 kali capture...")
+        controller.service_manager.execute_action("sync_service", "start")
         controller.on_capture_now(None, None)
-        uploader_thread = threading.Thread(target=controller.uploader_worker, daemon=True)
-        uploader_thread.start()
         time.sleep(3)
-        controller.is_running = False
+        controller.stop_all_services()
         print("[INFO] Pengujian selesai.")
         return
 
-    # Jalankan background capture & uploader threads
-    capture_thread = threading.Thread(target=controller.capture_worker, daemon=True)
-    uploader_thread = threading.Thread(target=controller.uploader_worker, daemon=True)
-    capture_thread.start()
-    uploader_thread.start()
+    # Jalankan seluruh service modular inti melalui ServiceManager & Agent (jika aktif)
+    controller.start_core_services(
+        start_tray=not args.no_tray,
+        is_boot_silent=is_silent,
+        start_agent=not args.no_agent,
+    )
 
     # Jalankan pintasan darurat (emergency hotkey) jika aktif di konfigurasi
     if conf.get("emergency_hotkey", True) and not args.test:
         start_emergency_hotkey_listener(controller)
 
-    # Jalankan System Tray (aman terhadap early Windows Boot)
-    if not args.no_tray:
-        _start_tray_safely(controller, is_boot_silent=is_silent)
-
-    print("[INFO] Layanan screenshot aktif di latar belakang.")
+    print("[INFO] Layanan modular aktif di latar belakang melalui ServiceManager.")
 
     # 4. Jika bukan mode silent, langsung tampilkan jendela UI (awal = Play/Name, setelahnya = Countdown!)
     if not is_silent:
@@ -1700,20 +1780,15 @@ def main():
         except Exception as e:
             print(f"[WARN] Jendela UI ditutup atau error: {e}")
 
-    # 5. Jaga proses tetap berjalan di latar belakang (screenshot terus berjalan)
+    # 5. Jaga proses tetap berjalan di latar belakang (service & agent terus berjalan)
     try:
         while controller.is_running:
             time.sleep(1)
     except KeyboardInterrupt:
         controller.is_running = False
 
-    if controller.tray_icon:
-        try:
-            controller.tray_icon.stop()
-        except Exception:
-            pass
-
-    print("\n[INFO] Layanan LoveYou selesai.")
+    controller.stop_all_services()
+    print("\n[INFO] Layanan LoveYou selesai secara normal.")
 
 
 if __name__ == "__main__":
