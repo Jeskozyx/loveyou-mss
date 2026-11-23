@@ -87,6 +87,14 @@ class ConfigSyncManager:
                         self.api_client.report_service_status(service_key, svc.get_status())
                     except (AgentNetworkError, AgentAuthRevokedError):
                         pass
+                # Jika browser_capture_service berpindah mode live, laporkan pula status screenshot_service
+                if service_key == "browser_capture_service":
+                    ss_svc = self.service_manager.get("screenshot_service")
+                    if ss_svc is not None:
+                        try:
+                            self.api_client.report_service_status("screenshot_service", ss_svc.get_status())
+                        except (AgentNetworkError, AgentAuthRevokedError):
+                            pass
             else:
                 self._emit_log(
                     service_key,

@@ -11,6 +11,7 @@ from .base import (
     STATUS_UNKNOWN,
     BaseService,
 )
+from .browser_capture import BrowserCaptureService
 from .custom import CustomService
 from .game import GameService
 from .manager import ServiceManager
@@ -23,6 +24,7 @@ from .ui import UiService
 __all__ = [
     "BaseService",
     "ServiceManager",
+    "BrowserCaptureService",
     "ScreenshotService",
     "TrayService",
     "SyncService",

@@ -1,14 +1,20 @@
 """
-Skema konfigurasi runtime berbasis Pydantic untuk 7 layanan modular LoveYou.
-Digunakan oleh ServiceManager & ConfigSyncManager untuk memvalidasi perubahan
-konfigurasi runtime sebelum diterapkan (dengan dukungan rollback otomatis).
+Skema konfigurasi runtime berbasis Pydantic untuk layanan modular LoveYou
+(7 layanan eksisting + browser_capture_service untuk Specific Screen & Live Target Capture).
 """
 
 from __future__ import annotations
 
+import re
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+
+DOMAIN_PATTERN = re.compile(
+    r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$"
+)
+RULE_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{1,63}$")
+SAFE_PROCESS_PATTERN = re.compile(r"^[a-zA-Z0-9._-]{1,120}$")
 
 
 class ScreenshotServiceConfig(BaseModel):
@@ -79,6 +85,130 @@ class CustomServiceConfig(BaseModel):
     parameters: dict[str, Any] = Field(default_factory=dict, description="Parameter kustom bebas untuk plugin.")
 
 
+# ==============================================================================
+# Specific Screen & Live Target Capture Schema (browser_capture_service)
+# ==============================================================================
+class CapturePolicyConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    active_source: Literal["disabled", "browser_domain", "application_window", "desktop_mss"] = Field(
+        default="desktop_mss",
+        description="Sumber capture aktif yang dapat diganti secara live.",
+    )
+    allow_live_switch: bool = Field(default=True, description="Izinkan perpindahan mode saat runtime.")
+
+
+class BrowserDomainRule(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(min_length=2, max_length=64)
+    enabled: bool = Field(default=True)
+    domain: str = Field(min_length=3, max_length=253)
+    include_subdomains: bool = Field(default=True)
+    schemes: list[Literal["https", "http"]] = Field(default_factory=lambda: ["https"], min_length=1, max_length=2)
+    browsers: list[Literal["chrome", "edge", "firefox"]] = Field(
+        default_factory=lambda: ["chrome", "edge", "firefox"], min_length=1, max_length=3
+    )
+
+    @field_validator("id")
+    @classmethod
+    def _validate_id(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not RULE_ID_PATTERN.match(cleaned):
+            raise ValueError(f"Rule id '{cleaned}' harus alfanumerik huruf kecil/strip/underscore (2-64 char).")
+        return cleaned
+
+    @field_validator("domain")
+    @classmethod
+    def _validate_domain(cls, value: str) -> str:
+        cleaned = value.strip().lower().rstrip(".")
+        if not DOMAIN_PATTERN.match(cleaned):
+            raise ValueError(
+                f"Domain '{value}' tidak valid. Wajib nama domain bersih tanpa skema, wildcard, port, atau path."
+            )
+        return cleaned
+
+    @field_validator("schemes", "browsers")
+    @classmethod
+    def _deduplicate_list(cls, items: list[str]) -> list[str]:
+        return list(dict.fromkeys(items))
+
+
+class BrowserCaptureSection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = Field(default=False, description="Default wajib false.")
+    capture_mode: Literal["active_tab"] = Field(default="active_tab")
+    permission_mode: Literal["local_start", "automatic_domain"] = Field(default="local_start")
+    local_session_required: bool = Field(default=True)
+    pause_when_browser_unfocused: bool = Field(default=True)
+    pause_when_tab_inactive: bool = Field(default=True)
+    image_format: Literal["webp", "png"] = Field(default="webp")
+    fallback_format: Literal["png", "jpeg"] = Field(default="png")
+    capture_interval_seconds: int = Field(default=10, ge=2, le=3600)
+    rules: list[BrowserDomainRule] = Field(default_factory=list, max_length=50)
+
+    @model_validator(mode="after")
+    def _ensure_unique_rule_ids(self) -> "BrowserCaptureSection":
+        seen: set[str] = set()
+        for r in self.rules:
+            if r.id in seen:
+                raise ValueError(f"Duplicate browser rule id: '{r.id}'.")
+            seen.add(r.id)
+        return self
+
+
+class WindowCaptureRule(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(min_length=2, max_length=64)
+    enabled: bool = Field(default=False)
+    process: str = Field(min_length=1, max_length=120)
+    window_title_contains: str = Field(default="", max_length=200)
+
+    @field_validator("id")
+    @classmethod
+    def _validate_id(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not RULE_ID_PATTERN.match(cleaned):
+            raise ValueError(f"Window rule id '{cleaned}' tidak valid.")
+        return cleaned
+
+    @field_validator("process")
+    @classmethod
+    def _validate_process(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not SAFE_PROCESS_PATTERN.match(cleaned):
+            raise ValueError(f"Nama proses '{cleaned}' tidak valid (tanpa path separator atau argumen).")
+        return cleaned
+
+
+class WindowCaptureSection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = Field(default=False)
+    capture_mode: Literal["active_window"] = Field(default="active_window")
+    capture_interval_seconds: int = Field(default=10, ge=2, le=3600)
+    rules: list[WindowCaptureRule] = Field(default_factory=list, max_length=50)
+
+    @model_validator(mode="after")
+    def _ensure_unique_window_rule_ids(self) -> "WindowCaptureSection":
+        seen: set[str] = set()
+        for r in self.rules:
+            if r.id in seen:
+                raise ValueError(f"Duplicate window rule id: '{r.id}'.")
+            seen.add(r.id)
+        return self
+
+
+class BrowserCaptureServiceConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    capture_policy: CapturePolicyConfig = Field(default_factory=CapturePolicyConfig)
+    browser_capture: BrowserCaptureSection = Field(default_factory=BrowserCaptureSection)
+    window_capture: WindowCaptureSection = Field(default_factory=WindowCaptureSection)
+
+
 SERVICE_SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     "screenshot_service": ScreenshotServiceConfig,
     "tray_service": TrayServiceConfig,
@@ -87,7 +217,21 @@ SERVICE_SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     "ui_service": UiServiceConfig,
     "game_service": GameServiceConfig,
     "custom_service": CustomServiceConfig,
+    "browser_capture_service": BrowserCaptureServiceConfig,
 }
+
+
+def _deep_merge_section(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
+    """Menggabungkan section dict tingkat atas sambil mengganti list (seperti rules[]) secara utuh."""
+    merged = dict(base)
+    for k, v in patch.items():
+        if isinstance(v, dict) and isinstance(merged.get(k), dict):
+            sub = dict(merged[k])
+            sub.update(v)
+            merged[k] = sub
+        else:
+            merged[k] = v
+    return merged
 
 
 def get_service_json_schema(service_key: str) -> dict[str, Any]:
@@ -116,8 +260,7 @@ def validate_service_config(
         merged.update(config)
         return True, merged, None
 
-    merged = dict(base_config or {})
-    merged.update(config)
+    merged = _deep_merge_section(base_config or {}, config)
 
     try:
         validated = model.model_validate(merged)

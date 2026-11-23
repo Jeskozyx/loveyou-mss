@@ -7,12 +7,14 @@ from .command_executor import ALLOWED_COMMAND_ACTIONS, CommandExecutor
 from .config_sync import ConfigSyncManager
 from .enrollment import DeviceEnrollmentManager
 from .identity import DeviceIdentityStore
+from .native_bridge import NativeHostBridge
 from .realtime_listener import RealtimeCommandListener
 from .runtime import LoveYouAgent
 from .updater import ReleaseUpdater, compute_sha256, verify_hmac_signature, verify_sha256
 
 __all__ = [
     "DeviceIdentityStore",
+    "NativeHostBridge",
     "AgentApiClient",
     "AgentApiError",
     "AgentAuthRevokedError",

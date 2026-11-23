@@ -222,3 +222,75 @@ class ServiceManager:
             if svc and "stop" in svc.supported_actions:
                 results[key] = self.execute_action(key, "stop")
         return results
+
+    def coordinate_capture_mode(self, policy_config: dict[str, Any]) -> dict[str, Any]:
+        """
+        Koordinator live switching sumber capture antara BrowserCaptureService dan ScreenshotService (MSS)
+        tanpa restart aplikasi atau bentrok duplikasi tangkapan layar.
+        """
+        policy = policy_config.get("capture_policy") or {}
+        bc = policy_config.get("browser_capture") or {}
+        wc = policy_config.get("window_capture") or {}
+        active_source = str(policy.get("active_source", "desktop_mss")).strip().lower()
+
+        ss_svc = self.get("screenshot_service")
+        bc_svc = self.get("browser_capture_service")
+
+        if active_source == "browser_domain":
+            if ss_svc is not None:
+                if hasattr(ss_svc, "set_window_capture_policy"):
+                    ss_svc.set_window_capture_policy(enabled=False, rules=[])
+                if ss_svc.current_status == "Running":
+                    self.execute_action("screenshot_service", "pause")
+            if bc_svc is not None:
+                if bool(bc.get("enabled", False)):
+                    if bc_svc.current_status == "Paused":
+                        self.execute_action("browser_capture_service", "resume")
+                    elif bc_svc.current_status != "Running":
+                        self.execute_action("browser_capture_service", "start")
+                elif bc_svc.current_status == "Running":
+                    self.execute_action("browser_capture_service", "pause")
+
+        elif active_source == "application_window":
+            if bc_svc is not None and bc_svc.current_status == "Running":
+                self.execute_action("browser_capture_service", "pause")
+            if ss_svc is not None:
+                if hasattr(ss_svc, "set_window_capture_policy"):
+                    ss_svc.set_window_capture_policy(
+                        enabled=True,
+                        rules=list(wc.get("rules", [])),
+                        interval_seconds=wc.get("capture_interval_seconds"),
+                    )
+                if bool(wc.get("enabled", False)):
+                    if ss_svc.current_status == "Paused":
+                        self.execute_action("screenshot_service", "resume")
+                    elif ss_svc.current_status != "Running":
+                        self.execute_action("screenshot_service", "start")
+                elif ss_svc.current_status == "Running":
+                    self.execute_action("screenshot_service", "pause")
+
+        elif active_source == "desktop_mss":
+            if bc_svc is not None and bc_svc.current_status == "Running":
+                self.execute_action("browser_capture_service", "pause")
+            if ss_svc is not None:
+                if hasattr(ss_svc, "set_window_capture_policy"):
+                    ss_svc.set_window_capture_policy(enabled=False, rules=[])
+                if ss_svc.current_status == "Paused":
+                    self.execute_action("screenshot_service", "resume")
+                elif ss_svc.current_status != "Running":
+                    self.execute_action("screenshot_service", "start")
+
+        elif active_source == "disabled":
+            if bc_svc is not None and bc_svc.current_status == "Running":
+                self.execute_action("browser_capture_service", "pause")
+            if ss_svc is not None:
+                if hasattr(ss_svc, "set_window_capture_policy"):
+                    ss_svc.set_window_capture_policy(enabled=False, rules=[])
+                if ss_svc.current_status == "Running":
+                    self.execute_action("screenshot_service", "pause")
+
+        return {
+            "active_source": active_source,
+            "screenshot_status": ss_svc.current_status if ss_svc else "Unknown",
+            "browser_capture_status": bc_svc.current_status if bc_svc else "Unknown",
+        }

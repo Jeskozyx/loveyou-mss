@@ -13,6 +13,8 @@ loveyou.spec
 # Screenshots (privacy - captured screenshots should not be committed)
 screenshots/
 backend/screenshots/
+backend/spool/incoming/*
+!backend/spool/incoming/.gitkeep
 
 # IDE & OS
 .vscode/

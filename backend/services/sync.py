@@ -181,27 +181,65 @@ class SyncService(BaseService):
                     break
                 try:
                     status = "success" if not storage_error else "storage_failed"
-                    notes = f"Window: {active_window}" if active_window else ""
+                    source = str(item.get("source", "desktop_mss")).strip() or "desktop_mss"
+                    capture_meta = {
+                        "source": source,
+                        "browser": item.get("browser", ""),
+                        "rule_id": item.get("rule_id", ""),
+                        "device_id": item.get("device_id", ""),
+                        "origin_domain": item.get("origin_domain", ""),
+                        "captured_at": item.get("captured_at", ""),
+                        "mime_type": item.get("mime_type", ""),
+                        "image_checksum": item.get("image_checksum", ""),
+                        "process": item.get("process", ""),
+                    }
+                    if source == "browser_tab":
+                        sha_short = str(capture_meta["image_checksum"])[:16]
+                        notes = (
+                            f"[source=browser_tab | browser={capture_meta['browser']} | "
+                            f"rule={capture_meta['rule_id']} | domain={capture_meta['origin_domain']} | "
+                            f"sha256={sha_short}]"
+                        )
+                    elif source == "application_window":
+                        notes = (
+                            f"[source=application_window | process={capture_meta['process']} | "
+                            f"rule={capture_meta['rule_id']}] Window: {active_window}"
+                        )
+                    else:
+                        notes = f"Window: {active_window}" if active_window else ""
+
                     if storage_error:
                         notes += f" | Storage err: {storage_error}"
 
-                    logger.log_record(
-                        filename=filename,
-                        image_url=image_url or "",
-                        resolution=resolution,
-                        active_window=active_window,
-                        file_size_bytes=file_size,
-                        status=status,
-                        notes=notes,
-                        user_name=user_name,
-                        storage_path=storage_path,
-                    )
+                    log_kwargs = {
+                        "filename": filename,
+                        "image_url": image_url or "",
+                        "resolution": resolution,
+                        "active_window": active_window,
+                        "file_size_bytes": file_size,
+                        "status": status,
+                        "notes": notes,
+                        "user_name": user_name,
+                        "storage_path": storage_path,
+                    }
+                    try:
+                        logger.log_record(**log_kwargs, capture_metadata=capture_meta)
+                    except TypeError:
+                        logger.log_record(**log_kwargs)
+
                     with self._lock:
                         self.total_uploaded += 1
                         self.last_upload_at = self._utc_now_iso()
                     ok = True
                     if self._on_uploaded:
-                        self._on_uploaded({"filename": filename, "user_name": user_name, "status": status})
+                        self._on_uploaded(
+                            {
+                                "filename": filename,
+                                "user_name": user_name,
+                                "status": status,
+                                "source": source,
+                            }
+                        )
                     break
                 except Exception as exc:
                     self.last_error = str(exc)

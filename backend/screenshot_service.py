@@ -42,9 +42,10 @@ for _candidate_path in (_CURRENT_DIR, _PARENT_DIR):
         sys.path.insert(0, _candidate_path)
 
 try:
-    from backend.agent import LoveYouAgent
+    from backend.agent import LoveYouAgent, NativeHostBridge
     from backend.services import (
         STATUS_PAUSED,
+        BrowserCaptureService,
         CustomService,
         GameService,
         NotificationService,
@@ -55,9 +56,10 @@ try:
         UiService,
     )
 except ImportError:
-    from agent import LoveYouAgent
+    from agent import LoveYouAgent, NativeHostBridge
     from services import (
         STATUS_PAUSED,
+        BrowserCaptureService,
         CustomService,
         GameService,
         NotificationService,
@@ -373,6 +375,38 @@ def get_active_window_title() -> str:
             buff = ctypes.create_unicode_buffer(length + 1)
             user32.GetWindowTextW(hwnd, buff, length + 1)
             return buff.value
+    except Exception:
+        pass
+    return ""
+
+
+def get_active_window_process_name() -> str:
+    """Mendapatkan nama executable proses (.exe) dari jendela foreground Windows via ctypes."""
+    if os.name != "nt":
+        return ""
+    try:
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+        hwnd = user32.GetForegroundWindow()
+        if not hwnd:
+            return ""
+        pid = wintypes.DWORD(0)
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if not pid.value:
+            return ""
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        h_proc = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid.value)
+        if not h_proc:
+            return ""
+        try:
+            buf_len = wintypes.DWORD(1024)
+            buf = ctypes.create_unicode_buffer(buf_len.value)
+            if kernel32.QueryFullProcessImageNameW(h_proc, 0, buf, ctypes.byref(buf_len)):
+                return os.path.basename(buf.value)
+        finally:
+            kernel32.CloseHandle(h_proc)
     except Exception:
         pass
     return ""
@@ -902,8 +936,9 @@ class SupabaseLogger:
         notes: str = "",
         user_name: str = "anonymous",
         storage_path: str = "",
+        capture_metadata: dict | None = None,
     ) -> dict:
-        """Mencatat metadata screenshot ke tabel hasil_ss dengan pemisahan user."""
+        """Mencatat metadata screenshot ke tabel hasil_ss dengan pemisahan user & sumber capture."""
         file_size_kb = round(file_size_bytes / 1024.0, 2)
         device_name = platform.node() or "Unknown"
 
@@ -925,7 +960,17 @@ class SupabaseLogger:
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
 
-        # Coba simpan dengan kolom user_name terlebih dahulu
+        # Coba simpan dengan kolom user_name + capture_source terlebih dahulu (graceful fallback)
+        if isinstance(capture_metadata, dict) and capture_metadata.get("source"):
+            try:
+                rich_record = dict(record)
+                rich_record["user_name"] = user_name
+                rich_record["capture_source"] = str(capture_metadata.get("source", "desktop_mss"))
+                response = self.client.table(self.table_name).insert(rich_record).execute()
+                return response.data
+            except Exception:
+                pass
+
         try:
             record_with_user = dict(record)
             record_with_user["user_name"] = user_name
@@ -1096,9 +1141,19 @@ class ServiceController:
             },
             capture_fn=capture_screenshot,
             active_window_fn=get_active_window_title,
+            active_process_fn=get_active_window_process_name,
             get_user_fn=self._get_synced_user,
             on_captured=self._handle_captured_item,
             on_notify=lambda title, msg: self.notification_service.notify(title, msg, event_kind="capture"),
+        )
+
+        self.native_bridge = NativeHostBridge()
+        self.browser_capture_service = BrowserCaptureService(
+            native_bridge=self.native_bridge,
+            get_user_fn=self._get_synced_user,
+            get_device_id_fn=lambda: self.agent.identity.device_id if getattr(self, "agent", None) else "",
+            on_captured=self._handle_captured_item,
+            on_policy_changed=lambda cfg, _ver: self.service_manager.coordinate_capture_mode(cfg),
         )
 
         self.tray_service = TrayService(
@@ -1130,6 +1185,7 @@ class ServiceController:
 
         for svc in (
             self.screenshot_service,
+            self.browser_capture_service,
             self.tray_service,
             self.sync_service,
             self.notification_service,
@@ -1312,12 +1368,14 @@ class ServiceController:
     def on_toggle_pause(self, icon, item):
         action = "resume" if self.is_paused else "pause"
         res = self.service_manager.execute_action("screenshot_service", action)
+        if self.browser_capture_service.current_status in ("Running", "Paused"):
+            self.service_manager.execute_action("browser_capture_service", action)
         if res.get("ok"):
             self.is_paused = action == "pause"
         else:
             self.is_paused = not self.is_paused
         status_text = "DIJEDA" if self.is_paused else "AKTIF"
-        print(f"[STATUS] Layanan screenshot sekarang: {status_text}")
+        print(f"[STATUS] Layanan capture sekarang: {status_text}")
         self.update_tray_status()
 
     def on_restart_screenshot(self, icon, item):
@@ -1327,7 +1385,9 @@ class ServiceController:
 
     def on_stop_screenshot(self, icon, item):
         res = self.service_manager.execute_action("screenshot_service", "stop")
-        print(f"[STATUS] Stop ScreenshotService: {res.get('message', '')}")
+        if self.browser_capture_service.current_status in ("Running", "Paused"):
+            self.service_manager.execute_action("browser_capture_service", "stop")
+        print(f"[STATUS] Stop Capture Services: {res.get('message', '')}")
         self.update_tray_status()
 
     def on_open_gallery(self, icon, item):

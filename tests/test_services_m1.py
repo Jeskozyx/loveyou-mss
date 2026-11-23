@@ -347,6 +347,7 @@ def test_legacy_screenshot_service_backward_compatibility() -> None:
     controller = legacy_module.ServiceController(conf, enable_agent=False, init_supabase=False)
     assert set(controller.service_manager.list_services()) == {
         "screenshot_service",
+        "browser_capture_service",
         "tray_service",
         "sync_service",
         "notification_service",
