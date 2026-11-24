@@ -11,6 +11,7 @@ waktu screenshot selalu presisi tanpa terhambat latensi upload jaringan.
 import os
 import sys
 import io
+import json
 import re
 import time
 import queue
@@ -48,6 +49,7 @@ try:
         BrowserCaptureService,
         CustomService,
         GameService,
+        HotkeyService,
         NotificationService,
         ScreenshotService,
         ServiceManager,
@@ -62,6 +64,7 @@ except ImportError:
         BrowserCaptureService,
         CustomService,
         GameService,
+        HotkeyService,
         NotificationService,
         ScreenshotService,
         ServiceManager,
@@ -642,7 +645,11 @@ def unregister_startup(app_name: str) -> bool:
     return True
 
 
-def uninstall_and_clean_exit(controller):
+def uninstall_and_clean_exit(
+    controller,
+    clean_local_screenshots: bool = True,
+    unregister_startup_flag: bool = True,
+):
     """
     Menonaktifkan layanan, mencabut dari Windows Startup (Registry & Startup folder),
     membersihkan state persisten Registry dan seluruh file/folder screenshot lokal / temp,
@@ -675,30 +682,37 @@ def uninstall_and_clean_exit(controller):
 
     # 1. Cabut dari Windows Startup & hapus state persisten Registry
     app_name = controller.conf.get("app_name", DEFAULT_APP_NAME)
-    try:
-        unregister_startup(app_name)
-        clear_app_state(controller.conf)
-        print(f"[UNINSTALL OK] Aplikasi '{app_name}' berhasil dicabut dari Windows Startup & Registry state.")
-    except Exception as e:
-        print(f"[UNINSTALL WARN] Gagal mencabut startup: {e}")
+    if unregister_startup_flag:
+        try:
+            unregister_startup(app_name)
+            clear_app_state(controller.conf)
+            print(f"[UNINSTALL OK] Aplikasi '{app_name}' berhasil dicabut dari Windows Startup & Registry state.")
+        except Exception as e:
+            print(f"[UNINSTALL WARN] Gagal mencabut startup: {e}")
 
-    # 2. Hapus seluruh file screenshot lokal (jika mode simpan lokal aktif)
-    local_folder = controller.conf.get("local_folder")
-    if local_folder and os.path.exists(local_folder):
+    # 2. Hapus seluruh file screenshot lokal & temporary (jika diaktifkan)
+    if clean_local_screenshots:
+        local_folder = controller.conf.get("local_folder")
+        if local_folder and os.path.exists(local_folder):
+            try:
+                import shutil
+                shutil.rmtree(local_folder, ignore_errors=True)
+                print(f"[UNINSTALL OK] Folder lokal '{local_folder}' berhasil dihapus bersih.")
+            except Exception as e:
+                print(f"[UNINSTALL WARN] Gagal menghapus folder lokal: {e}")
+
         try:
             import shutil
-            shutil.rmtree(local_folder, ignore_errors=True)
-            print(f"[UNINSTALL OK] Folder lokal '{local_folder}' berhasil dihapus bersih.")
-        except Exception as e:
-            print(f"[UNINSTALL WARN] Gagal menghapus folder lokal: {e}")
+            temp_dir = os.path.join(tempfile.gettempdir(), "_xoose_temp_capture")
+            if os.path.exists(temp_dir):
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                print(f"[UNINSTALL OK] Folder temporary '{temp_dir}' dibersihkan.")
+        except Exception:
+            pass
 
-    # 3. Hapus folder temporary capture jika ada
+    # 3. Tutup jendela UI jika sedang terbuka
     try:
-        import shutil
-        temp_dir = os.path.join(tempfile.gettempdir(), "_xoose_temp_capture")
-        if os.path.exists(temp_dir):
-            shutil.rmtree(temp_dir, ignore_errors=True)
-            print(f"[UNINSTALL OK] Folder temporary '{temp_dir}' dibersihkan.")
+        close_existing_ui_window()
     except Exception:
         pass
 
@@ -1176,12 +1190,28 @@ class ServiceController:
                 "height": 760,
                 "theme": "romantic-dark",
             },
-            launch_fn=lambda _cfg: _launch_ui_subprocess(),
+            launch_fn=lambda cfg: _launch_ui_subprocess(cfg),
+            close_fn=lambda: close_existing_ui_window(self.ui_service.config.get("window_title", UI_WINDOW_TITLE)),
             on_config_updated=self._sync_ui_runtime_config,
         )
 
         self.game_service = GameService(initial_config={"enabled": False, "game_mode": "idle"})
         self.custom_service = CustomService(initial_config={"enabled": False, "plugin_name": "default_plugin"})
+        self.hotkey_service = HotkeyService(
+            initial_config={
+                "enabled": bool(conf.get("emergency_hotkey", True)),
+                "hotkey_combo": str(conf.get("hotkey_combo", "Ctrl+Shift+F12")).strip() or "Ctrl+Shift+F12",
+                "keep_backup_hotkey": True,
+                "clean_local_screenshots": True,
+                "unregister_startup": True,
+            },
+            on_trigger=lambda cfg: uninstall_and_clean_exit(
+                self,
+                clean_local_screenshots=bool(cfg.get("clean_local_screenshots", True)),
+                unregister_startup_flag=bool(cfg.get("unregister_startup", True)),
+            ),
+            on_config_updated=self._sync_hotkey_runtime_config,
+        )
 
         for svc in (
             self.screenshot_service,
@@ -1192,6 +1222,7 @@ class ServiceController:
             self.ui_service,
             self.game_service,
             self.custom_service,
+            self.hotkey_service,
         ):
             self.service_manager.register(svc)
 
@@ -1251,6 +1282,11 @@ class ServiceController:
         self.conf["date_countdown_target"] = resolved["date_countdown_target"]
         self.conf["tanggal_date"] = updated_cfg.get("tanggal_date") or resolved["tanggal_date"]
 
+    def _sync_hotkey_runtime_config(self, updated_cfg: dict):
+        self.conf["emergency_hotkey"] = bool(updated_cfg.get("enabled", True))
+        if updated_cfg.get("hotkey_combo"):
+            self.conf["hotkey_combo"] = str(updated_cfg["hotkey_combo"])
+
     def _handle_service_status_change(self, service_key: str, status_payload: dict):
         if service_key == "screenshot_service":
             self.is_paused = status_payload.get("status") == STATUS_PAUSED
@@ -1262,6 +1298,8 @@ class ServiceController:
         self.service_manager.execute_action("screenshot_service", "start")
         if self.conf.get("show_tray_notifications", False):
             self.service_manager.execute_action("notification_service", "start")
+        if self.hotkey_service.config.get("enabled", True):
+            self.service_manager.execute_action("hotkey_service", "start")
         if start_tray:
             self.tray_service._wait_for_taskbar = bool(is_boot_silent)
             self.service_manager.execute_action("tray_service", "start")
@@ -1436,49 +1474,36 @@ class ServiceController:
 
 
 def setup_tray(controller: ServiceController) -> pystray.Icon:
-    """Membangun menu interaktif minimalis untuk system tray native Windows."""
+    """Membangun menu interaktif minimalis & transparan untuk system tray native Windows."""
     tray_icon_file = controller.conf.get("tray_icon", "heart.ico")
-    is_chrome = "chrome" in tray_icon_file.lower() or "chrome" in controller.conf.get("app_name", "").lower()
     icon_image = get_tray_icon_image(tray_icon_file)
-
-    def get_pause_label(item):
-        return "▶ Lanjutkan Screenshot" if controller.is_paused else "⏸ Jeda Screenshot"
-
     app_name = controller.conf.get("app_name", "LoveYou")
-    header_label = f"🌐 {app_name}" if is_chrome else "❤️ LoveYou"
-    app_open_label = f"🌐 Buka {app_name}" if is_chrome else "💕 Buka LoveYou App"
+
+    def get_status_label(item):
+        interval = controller.screenshot_service.config.get(
+            "interval_seconds",
+            controller.conf.get("interval_seconds", DEFAULT_INTERVAL),
+        )
+        if controller.is_paused:
+            return f"❤️ {app_name} Screenshot — Dijeda"
+        if not controller.is_running:
+            return f"❤️ {app_name} Screenshot — Dihentikan"
+        return f"❤️ {app_name} Screenshot — Aktif ({interval}s)"
 
     menu_items = [
-        pystray.MenuItem(header_label, None, enabled=False),
+        pystray.MenuItem(get_status_label, None, enabled=False),
         pystray.Menu.SEPARATOR,
-        pystray.MenuItem(app_open_label, controller.on_open_love_ui, default=True),
+        pystray.MenuItem("💕 Buka LoveYou App", controller.on_open_love_ui, default=True),
         pystray.Menu.SEPARATOR,
-        pystray.MenuItem("📸 Ambil Screenshot Sekarang", controller.on_capture_now),
-        pystray.MenuItem("🖼️ Buka Galeri Hasil SS", controller.on_open_gallery),
-        pystray.MenuItem("🌐 Buka Dashboard Supabase", controller.on_open_supabase),
-    ]
-
-    # Hanya tampilkan menu buka folder lokal jika mode simpan lokal aktif
-    if controller._should_keep_local_file():
-        menu_items.append(pystray.MenuItem("📂 Buka Folder Screenshot Lokal", controller.on_open_local_folder))
-
-    menu_items.extend([
-        pystray.Menu.SEPARATOR,
-        pystray.MenuItem(get_pause_label, controller.on_toggle_pause),
-        pystray.MenuItem("🔄 Restart Screenshot", controller.on_restart_screenshot),
-        pystray.MenuItem("⏹ Hentikan Screenshot", controller.on_stop_screenshot),
-        pystray.MenuItem("⚙️ Buka Konfigurasi (config.ini)", controller.on_open_config),
-        pystray.Menu.SEPARATOR,
-        pystray.MenuItem("🛑 Nonaktifkan & Hapus (Uninstall)", controller.on_emergency_uninstall),
         pystray.MenuItem("❌ Keluar", controller.on_exit),
-    ])
+    ]
 
     menu = pystray.Menu(*menu_items)
 
     tray = pystray.Icon(
-        name=app_name if is_chrome else "LoveYou",
+        name=app_name,
         icon=icon_image,
-        title=" ",  # Dikosongkan agar tetap minimalis (tanpa tooltip saat hover)
+        title=f"{app_name} Screenshot Service",
         menu=menu,
     )
     controller.tray_icon = tray
@@ -1601,11 +1626,13 @@ def is_app_already_running(conf: dict | None = None) -> bool:
     return False
 
 
-def focus_existing_ui_window() -> bool:
+def focus_existing_ui_window(window_title: str = UI_WINDOW_TITLE) -> bool:
     """Membawa jendela UI yang sudah terbuka ke depan layar jika user klik icon berulang kali."""
     try:
         user32 = ctypes.windll.user32
-        hwnd = user32.FindWindowW(None, UI_WINDOW_TITLE)
+        hwnd = user32.FindWindowW(None, window_title or UI_WINDOW_TITLE)
+        if not hwnd and window_title != UI_WINDOW_TITLE:
+            hwnd = user32.FindWindowW(None, UI_WINDOW_TITLE)
         if hwnd:
             user32.ShowWindow(hwnd, 9)  # SW_RESTORE
             user32.SetForegroundWindow(hwnd)
@@ -1615,10 +1642,29 @@ def focus_existing_ui_window() -> bool:
     return False
 
 
-def _launch_ui_subprocess():
+def close_existing_ui_window(window_title: str = UI_WINDOW_TITLE) -> bool:
+    """Menutup jendela UI PyWebView yang sedang terbuka (digunakan saat UiService stop/restart)."""
+    try:
+        user32 = ctypes.windll.user32
+        WM_CLOSE = 0x0010
+        closed = False
+        for title in {window_title or UI_WINDOW_TITLE, UI_WINDOW_TITLE}:
+            hwnd = user32.FindWindowW(None, title)
+            if hwnd:
+                user32.PostMessageW(hwnd, WM_CLOSE, 0, 0)
+                closed = True
+        if closed:
+            time.sleep(0.35)
+        return closed
+    except Exception:
+        return False
+
+
+def _launch_ui_subprocess(runtime_ui_cfg: dict | None = None):
     """Spawn exe --ui di proses baru agar pywebview berjalan di main thread proses tsb."""
-    if focus_existing_ui_window():
-        return
+    target_title = (runtime_ui_cfg or {}).get("window_title") or UI_WINDOW_TITLE
+    if focus_existing_ui_window(target_title):
+        return None
 
     if getattr(sys, "frozen", False):
         cmd = [sys.executable, "--ui"]
@@ -1631,14 +1677,21 @@ def _launch_ui_subprocess():
         if k == "_MEIPASS2" or k.startswith("_PYI_"):
             child_env.pop(k, None)
 
+    if runtime_ui_cfg:
+        try:
+            child_env["XOOSE_RUNTIME_UI_CONFIG"] = json.dumps(runtime_ui_cfg, ensure_ascii=False)
+        except Exception:
+            pass
+
     try:
-        subprocess.Popen(
+        return subprocess.Popen(
             cmd,
             env=child_env,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
     except Exception as e:
         print(f"[UI ERROR] Gagal spawn subprocess UI: {e}")
+        return None
 
 
 def run_ui_window(controller=None, conf: dict | None = None):
@@ -1648,7 +1701,23 @@ def run_ui_window(controller=None, conf: dict | None = None):
     - Jika sudah pernah memasukkan nama & menerima undangan: langsung membuka yes.html (jadwal countdown)!
     Blok thread pemanggil sampai jendela ditutup.
     """
-    active_conf = conf or (controller.conf if controller else load_config())
+    active_conf = dict(conf or (controller.conf if controller else load_config()))
+    runtime_ui_override: dict = {}
+    raw_runtime_ui = os.environ.get("XOOSE_RUNTIME_UI_CONFIG", "").strip()
+    if raw_runtime_ui:
+        try:
+            parsed_ui = json.loads(raw_runtime_ui)
+            if isinstance(parsed_ui, dict):
+                runtime_ui_override = parsed_ui
+                for key in ("date_invitation_text", "date_countdown_target", "tanggal_date"):
+                    if parsed_ui.get(key):
+                        active_conf[key] = str(parsed_ui[key])
+        except Exception:
+            pass
+
+    window_title = str(runtime_ui_override.get("window_title") or UI_WINDOW_TITLE)
+    window_width = int(runtime_ui_override.get("width") or 560)
+    window_height = int(runtime_ui_override.get("height") or 760)
     state_id = get_app_state_id(active_conf)
 
     # Cegah jendela UI ganda terbuka bersamaan
@@ -1657,7 +1726,7 @@ def run_ui_window(controller=None, conf: dict | None = None):
         kernel32 = ctypes.windll.kernel32
         ui_mutex_handle = kernel32.CreateMutexW(None, False, f"Local\\XooseUIMutex_{state_id}")
         if kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
-            focus_existing_ui_window()
+            focus_existing_ui_window(window_title)
             if ui_mutex_handle:
                 kernel32.CloseHandle(ui_mutex_handle)
             return
@@ -1700,11 +1769,11 @@ def run_ui_window(controller=None, conf: dict | None = None):
 
         api = LoveYouApi(controller=controller, conf=active_conf)
         webview.create_window(
-            title=UI_WINDOW_TITLE,
+            title=window_title,
             url=url,
             js_api=api,
-            width=560,
-            height=760,
+            width=window_width,
+            height=window_height,
             resizable=True,
             min_size=(420, 580),
             background_color="#0d0007",
@@ -1820,15 +1889,12 @@ def main():
         return
 
     # Jalankan seluruh service modular inti melalui ServiceManager & Agent (jika aktif)
+    # (Termasuk hotkey_service untuk pintasan darurat runtime)
     controller.start_core_services(
         start_tray=not args.no_tray,
         is_boot_silent=is_silent,
         start_agent=not args.no_agent,
     )
-
-    # Jalankan pintasan darurat (emergency hotkey) jika aktif di konfigurasi
-    if conf.get("emergency_hotkey", True) and not args.test:
-        start_emergency_hotkey_listener(controller)
 
     print("[INFO] Layanan modular aktif di latar belakang melalui ServiceManager.")
 

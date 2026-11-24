@@ -354,6 +354,7 @@ def test_legacy_screenshot_service_backward_compatibility() -> None:
         "ui_service",
         "game_service",
         "custom_service",
+        "hotkey_service",
     }
 
     # Toggle pause melalui ServiceController menyinkronkan ScreenshotService
@@ -374,9 +375,14 @@ def test_legacy_screenshot_service_backward_compatibility() -> None:
     assert res_ui["ok"] is True
     assert controller.conf["tanggal_date"] == "2027-01-01"
 
-    # Tray tetap minimalis (title=" ")
+    # Tray transparan dengan menu ringkas (Status Screenshot, Buka LoveYou App, Keluar)
     tray = legacy_module.setup_tray(controller)
-    assert tray.title == " "
+    assert tray.title == "LoveYou Screenshot Service"
+    non_sep_items = [item for item in tray.menu.items if item is not legacy_module.pystray.Menu.SEPARATOR]
+    assert len(non_sep_items) == 3
+    assert "Screenshot" in non_sep_items[0].text
+    assert "Buka LoveYou App" in non_sep_items[1].text
+    assert "Keluar" in non_sep_items[2].text
 
     controller.stop_all_services()
     assert controller.screenshot_service.current_status == STATUS_STOPPED
@@ -391,8 +397,56 @@ def test_schema_helpers_cover_all_services() -> None:
         "ui_service",
         "game_service",
         "custom_service",
+        "hotkey_service",
     ):
         schema = get_service_json_schema(key)
         assert schema["type"] == "object"
         ok, norm, err = validate_service_config(key, {})
         assert ok is True and norm is not None and err is None
+
+
+def test_hotkey_service_runtime_rebind_and_validation() -> None:
+    from backend.services import HotkeyService
+
+    registered_combos: list[str] = []
+    triggered: list[dict] = []
+
+    def fake_listener(cfg, stop_event, fire_trigger):
+        registered_combos.append(cfg["hotkey_combo"])
+        stop_event.wait(timeout=2.0)
+
+    svc = HotkeyService(
+        initial_config={"enabled": True, "hotkey_combo": "Ctrl+Shift+F12"},
+        on_trigger=lambda cfg: triggered.append(cfg),
+        register_loop_fn=fake_listener,
+        use_win32_listener=False,
+    )
+
+    assert svc.start()["ok"] is True
+    assert svc.current_status == STATUS_RUNNING
+    time.sleep(0.05)
+    assert "Ctrl+Shift+F12" in registered_combos
+
+    # Ubah keybind secara runtime -> otomatis re-register
+    res_update = svc.apply_config({"hotkey_combo": "Ctrl+Alt+Q", "clean_local_screenshots": True}, config_version=2)
+    assert res_update["ok"] is True
+    assert svc.active_config_version == 2
+    assert svc.config["hotkey_combo"] == "Ctrl+Alt+Q"
+    time.sleep(0.05)
+    assert "Ctrl+Alt+Q" in registered_combos
+
+    # Kombinasi di luar daftar enum ditolak
+    res_bad = svc.apply_config({"hotkey_combo": "Alt+F4"}, config_version=3)
+    assert res_bad["ok"] is False
+    assert svc.config["hotkey_combo"] == "Ctrl+Alt+Q"
+
+    # Trigger simulasi meneruskan konfigurasi pembersihan ke callback uninstall
+    svc._fire_trigger()
+    assert len(triggered) == 1
+    assert triggered[0]["clean_local_screenshots"] is True
+    assert triggered[0]["unregister_startup"] is True
+
+    # Nonaktifkan via runtime config -> service berhenti
+    res_off = svc.apply_config({"enabled": False}, config_version=4)
+    assert res_off["ok"] is True
+    assert svc.current_status == STATUS_STOPPED

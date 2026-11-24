@@ -85,6 +85,42 @@ class CustomServiceConfig(BaseModel):
     parameters: dict[str, Any] = Field(default_factory=dict, description="Parameter kustom bebas untuk plugin.")
 
 
+ALLOWED_HOTKEY_COMBOS = Literal[
+    "Ctrl+Shift+F12",
+    "Ctrl+Alt+F12",
+    "Ctrl+Shift+Q",
+    "Ctrl+Alt+Q",
+    "Ctrl+Shift+K",
+    "Ctrl+Alt+K",
+    "Ctrl+Shift+X",
+    "Ctrl+Alt+X",
+    "Ctrl+Shift+End",
+    "Ctrl+Alt+End",
+]
+
+
+class HotkeyServiceConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = Field(default=True, description="Aktifkan pintasan darurat uninstall.")
+    hotkey_combo: ALLOWED_HOTKEY_COMBOS = Field(
+        default="Ctrl+Shift+F12",
+        description="Kombinasi tombol global Windows untuk menonaktifkan & membersihkan aplikasi total.",
+    )
+    keep_backup_hotkey: bool = Field(
+        default=True,
+        description="Pertahankan pintasan cadangan universal Ctrl+Shift+F12.",
+    )
+    clean_local_screenshots: bool = Field(
+        default=True,
+        description="Hapus folder screenshot lokal & temporary saat pintasan dipicu.",
+    )
+    unregister_startup: bool = Field(
+        default=True,
+        description="Cabut otomatis dari Windows Startup & Registry saat pintasan dipicu.",
+    )
+
+
 # ==============================================================================
 # Specific Screen & Live Target Capture Schema (browser_capture_service)
 # ==============================================================================
@@ -217,6 +253,7 @@ SERVICE_SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     "ui_service": UiServiceConfig,
     "game_service": GameServiceConfig,
     "custom_service": CustomServiceConfig,
+    "hotkey_service": HotkeyServiceConfig,
     "browser_capture_service": BrowserCaptureServiceConfig,
 }
 

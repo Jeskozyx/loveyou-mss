@@ -14,6 +14,7 @@ from .base import (
 from .browser_capture import BrowserCaptureService
 from .custom import CustomService
 from .game import GameService
+from .hotkey import HotkeyService
 from .manager import ServiceManager
 from .notification import NotificationService
 from .screenshot import ScreenshotService
@@ -32,6 +33,7 @@ __all__ = [
     "UiService",
     "GameService",
     "CustomService",
+    "HotkeyService",
     "STATUS_RUNNING",
     "STATUS_STOPPED",
     "STATUS_PAUSED",

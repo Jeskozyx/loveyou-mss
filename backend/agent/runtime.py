@@ -214,16 +214,23 @@ class LoveYouAgent:
                 summary["heartbeat_sent"] = True
 
             # 2. HTTPS Command Polling (+ wake-up trigger)
+            did_sync_configs = False
             if force_all or self._poll_trigger.is_set() or (now - self._last_poll_at >= self.poll_interval):
                 self._poll_trigger.clear()
                 commands = self.api_client.poll_pending_commands()
                 self._last_poll_at = now
+                if commands:
+                    # Tarik konfigurasi terbaru lebih dulu sebelum mengeksekusi command (mis. restart UI service)
+                    synced = self.config_sync.sync_once()
+                    self._last_config_sync_at = now
+                    summary["configs_synced"] = synced
+                    did_sync_configs = True
                 for cmd in commands:
                     res = self.command_executor.execute_command(cmd)
                     summary["commands_processed"].append(res)
 
             # 3. Runtime Config Sync
-            if force_all or (now - self._last_config_sync_at >= self.config_sync_interval):
+            if not did_sync_configs and (force_all or (now - self._last_config_sync_at >= self.config_sync_interval)):
                 synced = self.config_sync.sync_once()
                 self._last_config_sync_at = now
                 summary["configs_synced"] = synced
